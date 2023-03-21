@@ -103,9 +103,7 @@ function subscribe(request: Request, notify: Notify) {
 	return addSubscriber(id, notify);
 }
 
-export type EventStreamInit = (
-	send: (data: string) => void
-) => () => void;
+export type EventStreamInit = (send: (data: string) => void) => () => void;
 
 function eventStream(request: Request, init: EventStreamInit) {
 	const stream = new ReadableStream({
@@ -190,6 +188,7 @@ function solidStartSseSupport(
 
 // Want to protect middleware from tree shaking
 declare global {
+	// eslint-disable-next-line no-var
 	var __no_tree_shaking: Record<string, unknown> | undefined;
 }
 

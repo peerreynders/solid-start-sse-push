@@ -14,7 +14,7 @@ import {
 } from 'solid-start';
 import './root.css';
 
-import { EventDataProvider } from './components/event-data-context';
+import { PairDataProvider } from './components/pair-data-context';
 
 export default function Root() {
 	return (
@@ -27,11 +27,11 @@ export default function Root() {
 			<Body>
 				<Suspense>
 					<ErrorBoundary>
-						<EventDataProvider>
+						<PairDataProvider>
 							<Routes>
 								<FileRoutes />
 							</Routes>
-						</EventDataProvider>
+						</PairDataProvider>
 					</ErrorBoundary>
 				</Suspense>
 				<Scripts />
