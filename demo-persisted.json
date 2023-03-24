@@ -1,0 +1,14 @@
+{
+  "users": [
+    {
+      "id": "5HKveRQF1em92D19JsQTX",
+      "email": "johnsmith@outlook.com"
+    }
+  ],
+  "passwords": [
+    {
+      "userId": "5HKveRQF1em92D19JsQTX",
+      "hash": "$2a$10$JFRItpayyXKyEHhtksAlEeH/m5uFSBJs65MbVPllz1Ldvu9sLaAAC"
+    }
+  ]
+}
