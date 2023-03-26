@@ -16,35 +16,20 @@ import { SYMBOLS, fromJson, type PairData } from '~/lib/foreign-exchange';
 
 import { eventStream } from '~/server/solid-start-sse-support';
 // NOTE: call `listen()` in `entry-server.tsx`
-import { makeRangeValue } from '~/lib/random';
-import { CONFIG, makePairForJson } from '~/server/foreign-exchange';
+import { subscribe as subscribeToSource } from '~/server/pair-data-source';
 
 async function connectServerSource(this: ServerFunctionEvent) {
+	let unsubscribe: (() => void) | undefined = undefined;
+
 	const init = (send: (data: string) => void) => {
-		let timeout: ReturnType<typeof setTimeout> | undefined = undefined;
-
-		const nextDelay = makeRangeValue(250, 500); // 250-500 ms
-		const nextConfigIndex = makeRangeValue(0, CONFIG.length - 1);
-		const nextIntNoise = makeRangeValue(-1000, 1000);
-		const nextNoise = () => nextIntNoise() / 1000;
-		let nextSendTime = Date.now();
-
-		const sendData = () => {
-			const now = Date.now();
-			const index = nextConfigIndex();
-			const data = makePairForJson(CONFIG[index], Date.now(), nextNoise());
-			send(JSON.stringify(data));
-
-			const delay = nextDelay();
-			timeout = setTimeout(sendData, delay - (now - nextSendTime));
-
-			nextSendTime = now + delay;
-		};
-		sendData();
+		unsubscribe = subscribeToSource(send);
 
 		return () => {
+			if (unsubscribe) {
+				unsubscribe();
+				unsubscribe = undefined;
+			}
 			console.log('disconnect');
-			clearTimeout(timeout);
 		};
 	};
 

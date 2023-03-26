@@ -18,7 +18,7 @@ import { PairDataProvider } from './components/pair-data-context';
 import { UserProvider } from '~/components/user-context';
 
 export default function Root() {
-  const isRouting = useIsRouting();
+	const isRouting = useIsRouting();
 
 	return (
 		<Html lang="en">

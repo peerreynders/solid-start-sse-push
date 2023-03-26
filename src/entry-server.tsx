@@ -3,7 +3,7 @@ import {
 	renderAsync,
 	StartServer,
 	type MiddlewareInput,
-	type MiddlewareFn,	
+	type MiddlewareFn,
 } from 'solid-start/entry-server';
 import { redirect } from 'solid-start/server';
 import { getUser, logout } from './server/session';
@@ -13,11 +13,15 @@ import { homeHref, loginHref, logoutHref } from './route-path';
 import { listen } from '~/server/solid-start-sse-support';
 // in-memory-user
 import { start as startRepo } from '~/server/repo';
+// pair-data-source
+import { start as startSource } from '~/server/pair-data-source';
 
 // solid-start-sse-support
 listen();
 // in-memory-user
 startRepo();
+// pair-data-source
+startSource();
 
 const protectedPaths = new Set([homeHref]);
 
@@ -39,6 +43,6 @@ function userMiddleware({ forward }: MiddlewareInput): MiddlewareFn {
 }
 
 export default createHandler(
-  userMiddleware,
+	userMiddleware,
 	renderAsync((event) => <StartServer event={event} />)
 );
