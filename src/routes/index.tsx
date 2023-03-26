@@ -1,8 +1,8 @@
-import { For, type Accessor } from 'solid-js';
+import { For, onCleanup, type Accessor } from 'solid-js';
 import { Title } from 'solid-start';
 
 import { SYMBOLS, type PairData } from '~/lib/foreign-exchange';
-import { usePairData } from '~/components/pair-data-context';
+import { disposePairData, usePairData } from '~/components/pair-data-context';
 
 export default function Home() {
 	const pairs = usePairData();
@@ -14,6 +14,8 @@ export default function Home() {
 
 		entries.push([pairData, symbol, label]);
 	}
+
+	onCleanup(disposePairData);
 
 	return (
 		<>

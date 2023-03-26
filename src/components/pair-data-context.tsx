@@ -4,7 +4,6 @@ import {
 	createEffect,
 	useContext,
 	createSignal,
-	onCleanup,
 	type Accessor,
 	type ParentProps,
 	type Setter,
@@ -59,42 +58,53 @@ const [pairs, pairSetters] = (() => {
 
 const PairDataContext = createContext(pairs);
 
-let started = false;
+const [refCount, setRefCount] = createSignal(0);
+const increment = (n: number) => n + 1;
+const decrement = (n: number) => (n > 0 ? n - 1 : 0);
 
-function startEventData() {
-	if (started) return;
+let eventSource: EventSource | undefined;
 
+function onMessage(message: MessageEvent<string>) {
+	const data = fromJson(message.data);
+	if (!data) return;
+
+	// De-multiplex event by pushing
+	// it onto the matching exchange pair signal
+	const setData = pairSetters.get(data.symbol);
+	if (!setData) return;
+
+	setData(data);
+}
+
+function stopEventSource() {
+	if (!eventSource) return;
+
+	eventSource.removeEventListener('message', onMessage);
+	eventSource.close();
+	eventSource = undefined;
+}
+
+function startEventSource(href: string) {
+	if (eventSource) stopEventSource();
+
+	eventSource = new EventSource(href);
+	eventSource.addEventListener('message', onMessage);
+}
+
+function setupEventData() {
 	const handle = server$(connectServerSource);
-	const href = handle.url;
 
-	// Runs only once but also registers for clean up
 	createEffect(() => {
-		const onMessage = (message: MessageEvent<string>) => {
-			const data = fromJson(message.data);
-			if (!data) return;
-
-			// De-multiplex event by pushing
-			// it onto the matching exchange pair signal
-			const setData = pairSetters.get(data.symbol);
-			if (!setData) return;
-
-			setData(data);
-		};
-
-		const eventSource = new EventSource(href);
-		eventSource.addEventListener('message', onMessage);
-
-		onCleanup(() => {
-			eventSource.removeEventListener('message', onMessage);
-			eventSource.close();
-		});
+		if (!eventSource) {
+			if (refCount() > 0) startEventSource(handle.url);
+		} else {
+			if (refCount() < 1) stopEventSource();
+		}
 	});
-
-	started = true;
 }
 
 function PairDataProvider(props: ParentProps) {
-	startEventData();
+	setupEventData();
 
 	return (
 		<PairDataContext.Provider value={pairs}>
@@ -103,6 +113,11 @@ function PairDataProvider(props: ParentProps) {
 	);
 }
 
-const usePairData = () => useContext(PairDataContext);
+function usePairData() {
+	setRefCount(increment);
+	return useContext(PairDataContext);
+}
 
-export { PairDataProvider, usePairData };
+const disposePairData = () => setRefCount(decrement);
+
+export { disposePairData, PairDataProvider, usePairData };

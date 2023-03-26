@@ -1,19 +1,6 @@
 import { makeRangeValue } from '~/lib/random';
 import type { PairForJson } from '~/lib/foreign-exchange';
 
-export type Send = (info: string) => void;
-
-const subscribers = new Set<Send>();
-
-function subscribe(send: Send) {
-	subscribers.add(send);
-	return () => subscribers.delete(send);
-}
-
-function sendPair(info: string) {
-	for (const send of subscribers) send(info);
-}
-
 const FULL_CYCLE = 360; // in degrees
 
 function makePairConfig(
@@ -79,6 +66,14 @@ function makePairForJson(config: PairConfig, epochMs: number, noise = 0.0) {
 	} as PairForJson;
 }
 
+export type Send = (info: string) => void;
+
+const subscribers = new Set<Send>();
+
+function sendPair(info: string) {
+	for (const send of subscribers) send(info);
+}
+
 let timeout: ReturnType<typeof setTimeout> | undefined = undefined;
 
 function start() {
@@ -109,4 +104,16 @@ function stop() {
 	timeout = undefined;
 }
 
-export { start, stop, subscribe };
+function subscribe(send: Send) {
+	subscribers.add(send);
+	if (!timeout && subscribers.size > 0) start();
+
+	return () => {
+		const result = subscribers.delete(send);
+		if (subscribers.size < 1 && timeout) stop();
+
+		return result;
+	};
+}
+
+export { subscribe };
