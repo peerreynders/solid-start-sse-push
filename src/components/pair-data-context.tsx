@@ -4,12 +4,11 @@ import {
 	createEffect,
 	useContext,
 	createSignal,
-	type Accessor,
 	type ParentProps,
-	type Setter,
 } from 'solid-js';
+import { createStore, type Store } from 'solid-js/store';
 import server$, { ServerFunctionEvent } from 'solid-start/server';
-import { SYMBOLS, fromJson, type PairPrice } from '~/lib/foreign-exchange';
+import { SYMBOLS, fromJson, type Price } from '~/lib/foreign-exchange';
 
 // --- START server side ---
 
@@ -37,23 +36,59 @@ async function connectServerSource(this: ServerFunctionEvent) {
 
 // --- END server side ---
 
-const initialData = (symbol: string, timestamp: Date) => ({
-	symbol,
-	price: {
-		timestamp,
-		bid: ' ',
-		ask: ' ',
-	},
-});
+type PairPrices = {
+	symbol: string;
+	prices: Price[];
+};
 
-const [pairs, pairSetters] = (() => {
-	const accessors = new Map<string, Accessor<PairPrice>>();
-	const setters = new Map<string, Setter<PairPrice>>();
-	const now = new Date();
+export type PricesStore = Store<PairPrices>;
+type PushPriceFn = (latest: Price) => void;
+
+type PriceUpdateParameters = {
+	latest: Price;
+	maxLength: number;
+};
+
+function pushPrice(this: PriceUpdateParameters, current: Price[]) {
+	const next = current.slice(0, this.maxLength - 1);
+	next.push(this.latest);
+	return next;
+}
+
+function makePairPricesStore(empty: Price, symbol: string) {
+	const [pairPrices, setPairPrices] = createStore<PairPrices>({
+		symbol,
+		prices: [],
+	});
+
+	const updateParameters: PriceUpdateParameters = {
+		latest: empty,
+		maxLength: 10,
+	};
+	const fn = pushPrice.bind(updateParameters);
+	const tuple: [PricesStore, PushPriceFn] = [
+		pairPrices,
+		(latest: Price) => {
+			updateParameters.latest = latest;
+			setPairPrices('prices', fn);
+		},
+	];
+
+	return tuple;
+}
+
+const [pairs, pushFns] = (() => {
+	const accessors = new Map<string, Store<PairPrices>>();
+	const setters = new Map<string, (latest: Price) => void>();
+	const emptyPrice = {
+		timestamp: new Date(),
+		bid: '',
+		ask: '',
+	};
 	for (const symbol of SYMBOLS.keys()) {
-		const [pair, setPair] = createSignal(initialData(symbol, now));
-		accessors.set(symbol, pair);
-		setters.set(symbol, setPair);
+		const [pairPrices, push] = makePairPricesStore(emptyPrice, symbol);
+		accessors.set(symbol, pairPrices);
+		setters.set(symbol, push);
 	}
 	return [accessors, setters];
 })();
@@ -72,10 +107,10 @@ function onMessage(message: MessageEvent<string>) {
 
 	// De-multiplex event by pushing
 	// it onto the matching exchange pair signal
-	const setData = pairSetters.get(data.symbol);
-	if (!setData) return;
+	const pushPrice = pushFns.get(data.symbol);
+	if (!pushPrice) return;
 
-	setData(data);
+	pushPrice(data.price);
 }
 
 function stopEventSource() {

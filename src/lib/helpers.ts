@@ -86,4 +86,11 @@ function decodePageError() {
 	return result;
 }
 
-export { decodePageError, isTimeValue, toCompleteValue, validateEmail };
+export {
+	MIN_TIMEVALUE,
+	MAX_TIMEVALUE,
+	decodePageError,
+	isTimeValue,
+	toCompleteValue,
+	validateEmail,
+};

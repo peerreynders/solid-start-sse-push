@@ -1,18 +1,27 @@
-import { For, onCleanup, type Accessor } from 'solid-js';
+import { For, onCleanup } from 'solid-js';
 import { Title } from 'solid-start';
 
-import { SYMBOLS, type PairPrice } from '~/lib/foreign-exchange';
-import { disposePairData, usePairData } from '~/components/pair-data-context';
+import { SYMBOLS } from '~/lib/foreign-exchange';
+import {
+	disposePairData,
+	usePairData,
+	type PricesStore,
+} from '~/components/pair-data-context';
+
+function latestBid(store: PricesStore) {
+	const length = store.prices.length;
+	return length > 1 ? store.prices[length - 1].bid : '';
+}
 
 export default function Home() {
-	const pairs = usePairData();
+	const pairPrices = usePairData();
 
-	const entries: [Accessor<PairPrice>, string, string][] = [];
+	const entries: [PricesStore, string, string][] = [];
 	for (const [symbol, label] of SYMBOLS) {
-		const pairData = pairs.get(symbol);
-		if (!pairData) continue;
+		const priceData = pairPrices.get(symbol);
+		if (!priceData) continue;
 
-		entries.push([pairData, symbol, label]);
+		entries.push([priceData, symbol, label]);
 	}
 
 	onCleanup(disposePairData);
@@ -32,8 +41,8 @@ export default function Home() {
 					<tbody>
 						<tr>
 							<For each={entries}>
-								{([pairData, symbol]) => (
-									<td id={symbol}>{pairData().price.bid}</td>
+								{([priceData, symbol]) => (
+									<td id={symbol}>{latestBid(priceData)}</td>
 								)}
 							</For>
 						</tr>

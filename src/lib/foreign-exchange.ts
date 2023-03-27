@@ -23,55 +23,47 @@ const SYMBOLS = new Map<string, string>([
 	['AUD-GBP', 'AUD/GBP'],
 ]);
 
+function isPriceValue(value: unknown): value is string {
+	const num = Number(value);
+
+	return (
+		typeof value === 'string' && typeof num === 'number' && !Number.isNaN(num)
+	);
+}
+
+function isPriceJson(data: unknown): data is PriceJson {
+	if (typeof data !== 'object' || data === null) return false;
+
+	const price = data as Record<string, unknown>;
+	if (!isTimeValue(price.timestamp)) return false;
+
+	if (!isPriceValue(price.bid)) return false;
+
+	if (!isPriceValue(price.ask)) return false;
+
+	return true;
+}
+
 function fromJson(raw: string) {
 	const data = JSON.parse(raw) as Record<string, unknown>;
-
 	if (typeof data !== 'object' || data === null) return undefined;
 
 	const symbol = data.symbol;
 	if (typeof symbol !== 'string' || !SYMBOLS.has(symbol)) return undefined;
 
-	if (typeof data.price !== 'object' || data.price === null) return undefined;
-	const priceData = data.price as Record<string, unknown>;
+	const price = data.price;
+	if (!isPriceJson(price)) return undefined;
 
-	const timeValue = priceData.timestamp;
-	if (!isTimeValue(timeValue)) return undefined;
-
-	const timestamp = new Date(timeValue);
-	if (
-		timestamp.toString() === 'invalid date' ||
-		timestamp.getTime() !== timeValue
-	)
-		return undefined;
-
-	const bid = priceData.bid;
-	const bidNumber = Number(bid);
-	if (
-		typeof bid !== 'string' ||
-		typeof bidNumber !== 'number' ||
-		Number.isNaN(bidNumber)
-	)
-		return undefined;
-
-	const ask = priceData.ask;
-	const askNumber = Number(ask);
-	if (
-		typeof ask !== 'string' ||
-		typeof askNumber !== 'number' ||
-		Number.isNaN(askNumber)
-	)
-		return undefined;
-
-	const result: Pair<Price> = {
+	const pair: Pair<Price> = {
 		symbol,
 		price: {
-			timestamp,
-			bid,
-			ask,
+			timestamp: new Date(price.timestamp),
+			bid: price.bid,
+			ask: price.ask,
 		},
 	};
 
-	return result;
+	return pair;
 }
 
 export { SYMBOLS, fromJson };
