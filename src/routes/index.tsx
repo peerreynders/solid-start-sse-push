@@ -1,13 +1,13 @@
 import { For, onCleanup, type Accessor } from 'solid-js';
 import { Title } from 'solid-start';
 
-import { SYMBOLS, type PairData } from '~/lib/foreign-exchange';
+import { SYMBOLS, type PairPrice } from '~/lib/foreign-exchange';
 import { disposePairData, usePairData } from '~/components/pair-data-context';
 
 export default function Home() {
 	const pairs = usePairData();
 
-	const entries: [Accessor<PairData>, string, string][] = [];
+	const entries: [Accessor<PairPrice>, string, string][] = [];
 	for (const [symbol, label] of SYMBOLS) {
 		const pairData = pairs.get(symbol);
 		if (!pairData) continue;
@@ -32,7 +32,9 @@ export default function Home() {
 					<tbody>
 						<tr>
 							<For each={entries}>
-								{([pairData, symbol]) => <td id={symbol}>{pairData().bid}</td>}
+								{([pairData, symbol]) => (
+									<td id={symbol}>{pairData().price.bid}</td>
+								)}
 							</For>
 						</tr>
 					</tbody>

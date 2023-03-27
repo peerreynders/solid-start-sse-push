@@ -9,7 +9,7 @@ import {
 	type Setter,
 } from 'solid-js';
 import server$, { ServerFunctionEvent } from 'solid-start/server';
-import { SYMBOLS, fromJson, type PairData } from '~/lib/foreign-exchange';
+import { SYMBOLS, fromJson, type PairPrice } from '~/lib/foreign-exchange';
 
 // --- START server side ---
 
@@ -38,15 +38,17 @@ async function connectServerSource(this: ServerFunctionEvent) {
 // --- END server side ---
 
 const initialData = (symbol: string, timestamp: Date) => ({
-	timestamp,
 	symbol,
-	bid: ' ',
-	ask: ' ',
+	price: {
+		timestamp,
+		bid: ' ',
+		ask: ' ',
+	},
 });
 
 const [pairs, pairSetters] = (() => {
-	const accessors = new Map<string, Accessor<PairData>>();
-	const setters = new Map<string, Setter<PairData>>();
+	const accessors = new Map<string, Accessor<PairPrice>>();
+	const setters = new Map<string, Setter<PairPrice>>();
 	const now = new Date();
 	for (const symbol of SYMBOLS.keys()) {
 		const [pair, setPair] = createSignal(initialData(symbol, now));

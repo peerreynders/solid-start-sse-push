@@ -13,7 +13,7 @@ import { FormError } from 'solid-start/data';
 import { createUserSession } from '~/server/session';
 import { insertUser, selectUserByEmail, verifyLogin } from '~/server/repo';
 
-import { validateEmail } from '~/helpers';
+import { validateEmail } from '~/lib/helpers';
 
 type FieldError =
 	| 'email-invalid'

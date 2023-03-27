@@ -1,5 +1,5 @@
 import { makeRangeValue } from '~/lib/random';
-import type { PairForJson } from '~/lib/foreign-exchange';
+import type { Pair, PriceJson } from '~/lib/foreign-exchange';
 
 const FULL_CYCLE = 360; // in degrees
 
@@ -58,12 +58,16 @@ function makePairForJson(config: PairConfig, epochMs: number, noise = 0.0) {
 		cyclicSpread(spread, 100, long, epochSecs) +
 		cyclicSpread(spread, 30, short, epochSecs);
 
-	return {
-		timestamp: new Date(epochMs).toISOString(),
+	const pair: Pair<PriceJson> = {
 		symbol: config.symbol,
-		bid: current.toFixed(fractionDigits),
-		ask: (bid + spread).toFixed(fractionDigits),
-	} as PairForJson;
+		price: {
+			timestamp: epochMs,
+			bid: current.toFixed(fractionDigits),
+			ask: (bid + spread).toFixed(fractionDigits),
+		},
+	};
+
+	return pair;
 }
 
 export type Send = (info: string) => void;
