@@ -8,20 +8,30 @@ import {
 	type PricesStore,
 } from '~/components/pair-data-context';
 
+const timestampFmt = new Intl.DateTimeFormat(undefined, {
+	dateStyle: 'short',
+	timeStyle: 'medium',
+});
+
 function latestBid(store: PricesStore) {
 	const length = store.prices.length;
 	return length > 1 ? store.prices[length - 1].bid : '';
 }
 
+function pricesRows(store: PricesStore) {
+  const prices = store.prices.slice();
+	return prices.reverse();
+}
+
 export default function Home() {
-	const pairPrices = usePairData();
+	const priceStores = usePairData();
 
 	const entries: [PricesStore, string, string][] = [];
 	for (const [symbol, label] of SYMBOLS) {
-		const priceData = pairPrices.get(symbol);
-		if (!priceData) continue;
+		const store = priceStores.get(symbol);
+		if (!store) continue;
 
-		entries.push([priceData, symbol, label]);
+		entries.push([store, symbol, label]);
 	}
 
 	onCleanup(disposePairData);
@@ -41,13 +51,38 @@ export default function Home() {
 					<tbody>
 						<tr>
 							<For each={entries}>
-								{([priceData, symbol]) => (
-									<td id={symbol}>{latestBid(priceData)}</td>
+								{([store, symbol]) => (
+									<td id={symbol}>{latestBid(store)}</td>
 								)}
 							</For>
 						</tr>
 					</tbody>
 				</table>
+				<For each={entries}>
+					{([store, _symbol, label]) => (
+						<table class="price-table">
+							<caption>{label}</caption>
+							<thead>
+								<tr>
+  								<th>Timestamp</th>
+  								<th>Bid</th>
+  								<th>Ask</th>
+								</tr>
+							</thead>
+							<tbody>
+							  <For each={pricesRows(store)}>
+									{(price) => (
+										<tr>
+											<th>{timestampFmt.format(price.timestamp)}</th>
+											<td>{price.bid}</td>
+											<td>{price.ask}</td>
+										</tr>
+									)}
+								</For>
+							</tbody>
+						</table>
+						)}
+				</For>
 				<footer class="c-info">
 					<p class="c-info__line">
 						Visit{' '}

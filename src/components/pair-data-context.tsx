@@ -50,7 +50,9 @@ type PriceUpdateParameters = {
 };
 
 function pushPrice(this: PriceUpdateParameters, current: Price[]) {
-	const next = current.slice(0, this.maxLength - 1);
+	const sliceEnd = current.length;
+	const start = sliceEnd >= this.maxLength ? sliceEnd - this.maxLength + 1 : 0;
+	const next = current.slice(start, sliceEnd);
 	next.push(this.latest);
 	return next;
 }
@@ -77,8 +79,8 @@ function makePairPricesStore(empty: Price, symbol: string) {
 	return tuple;
 }
 
-const [pairs, pushFns] = (() => {
-	const accessors = new Map<string, Store<PairPrices>>();
+const [priceStores, pushFns] = (() => {
+	const stores = new Map<string, Store<PairPrices>>();
 	const setters = new Map<string, (latest: Price) => void>();
 	const emptyPrice = {
 		timestamp: new Date(),
@@ -86,14 +88,14 @@ const [pairs, pushFns] = (() => {
 		ask: '',
 	};
 	for (const symbol of SYMBOLS.keys()) {
-		const [pairPrices, push] = makePairPricesStore(emptyPrice, symbol);
-		accessors.set(symbol, pairPrices);
+		const [store, push] = makePairPricesStore(emptyPrice, symbol);
+		stores.set(symbol, store);
 		setters.set(symbol, push);
 	}
-	return [accessors, setters];
+	return [stores, setters];
 })();
 
-const PairDataContext = createContext(pairs);
+const PairDataContext = createContext(priceStores);
 
 const [refCount, setRefCount] = createSignal(0);
 const increment = (n: number) => n + 1;
@@ -144,7 +146,7 @@ function PairDataProvider(props: ParentProps) {
 	setupEventData();
 
 	return (
-		<PairDataContext.Provider value={pairs}>
+		<PairDataContext.Provider value={priceStores}>
 			{props.children}
 		</PairDataContext.Provider>
 	);
