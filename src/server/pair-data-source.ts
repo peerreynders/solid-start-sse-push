@@ -60,11 +60,13 @@ function makePairForJson(config: PairConfig, epochMs: number, noise = 0.0) {
 
 	const pair: Pair<PriceJson> = {
 		symbol: config.symbol,
-		price: {
-			timestamp: epochMs,
-			bid: current.toFixed(fractionDigits),
-			ask: (bid + spread).toFixed(fractionDigits),
-		},
+		prices: [
+			{
+				timestamp: epochMs,
+				bid: current.toFixed(fractionDigits),
+				ask: (bid + spread).toFixed(fractionDigits),
+			},
+		],
 	};
 
 	return pair;

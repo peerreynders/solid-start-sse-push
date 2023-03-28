@@ -12,10 +12,10 @@ export type Price = Omit<PriceJson, 'timestamp'> & {
 
 export type Pair<P> = {
 	symbol: string; // Exchange Pair
-	price: P;
+	prices: P[];
 };
 
-export type PairPrice = Pair<Price>;
+export type PairPrices = Pair<Price>;
 
 const SYMBOLS = new Map<string, string>([
 	['USD-JPY', 'USD/JPY'],
@@ -44,6 +44,15 @@ function isPriceJson(data: unknown): data is PriceJson {
 	return true;
 }
 
+const isPriceHistory = (data: unknown): data is PriceJson[] =>
+	Array.isArray(data) ? data.every(isPriceJson) : false;
+
+const toPrice = ({ timestamp, bid, ask }: PriceJson) => ({
+	timestamp: new Date(timestamp),
+	bid,
+	ask,
+});
+
 function fromJson(raw: string) {
 	const data = JSON.parse(raw) as Record<string, unknown>;
 	if (typeof data !== 'object' || data === null) return undefined;
@@ -51,19 +60,31 @@ function fromJson(raw: string) {
 	const symbol = data.symbol;
 	if (typeof symbol !== 'string' || !SYMBOLS.has(symbol)) return undefined;
 
-	const price = data.price;
-	if (!isPriceJson(price)) return undefined;
+	const history = data.prices;
+	if (!isPriceHistory(history)) return undefined;
 
 	const pair: Pair<Price> = {
 		symbol,
-		price: {
-			timestamp: new Date(price.timestamp),
-			bid: price.bid,
-			ask: price.ask,
-		},
+		prices: history.map(toPrice),
 	};
 
 	return pair;
+}
+
+export type WithLatestParameters<P> = {
+	latest: P[]; // more recent last
+	maxLength: number;
+};
+
+function withLatestPrices<P>(this: WithLatestParameters<P>, history: P[]) {
+	const length = this.latest.length;
+
+	if (length >= this.maxLength) return this.latest.slice(-this.maxLength);
+
+	const prices = history.slice(length - this.maxLength);
+	for (const price of this.latest) prices.push(price);
+
+	return prices;
 }
 
 const timeFormat = new Intl.DateTimeFormat(undefined, {
@@ -72,4 +93,4 @@ const timeFormat = new Intl.DateTimeFormat(undefined, {
 });
 const formatTimestamp = timeFormat.format;
 
-export { formatTimestamp, fromJson, SYMBOLS };
+export { formatTimestamp, fromJson, withLatestPrices, SYMBOLS };

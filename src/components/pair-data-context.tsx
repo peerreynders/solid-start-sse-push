@@ -8,7 +8,14 @@ import {
 } from 'solid-js';
 import { createStore, type Store } from 'solid-js/store';
 import server$, { ServerFunctionEvent } from 'solid-start/server';
-import { SYMBOLS, fromJson, type Price } from '~/lib/foreign-exchange';
+import {
+	SYMBOLS,
+	fromJson,
+	withLatestPrices,
+	type PairPrices,
+	type Price,
+	type WithLatestParameters,
+} from '~/lib/foreign-exchange';
 
 // --- START server side ---
 
@@ -36,42 +43,28 @@ async function connectServerSource(this: ServerFunctionEvent) {
 
 // --- END server side ---
 
-type PairPrices = {
-	symbol: string;
-	prices: Price[];
-};
-
 export type PricesStore = Store<PairPrices>;
-type PushPriceFn = (latest: Price) => void;
+type PushPriceFn = (latest: Price[]) => void;
 
-type PriceUpdateParameters = {
-	latest: Price;
-	maxLength: number;
-};
-
-function pushPrice(this: PriceUpdateParameters, current: Price[]) {
-	const sliceEnd = current.length;
-	const start = sliceEnd >= this.maxLength ? sliceEnd - this.maxLength + 1 : 0;
-	const next = current.slice(start, sliceEnd);
-	next.push(this.latest);
-	return next;
-}
-
-function makePairPricesStore(empty: Price, symbol: string) {
+function makePricesStore(symbol: string) {
 	const [pairPrices, setPairPrices] = createStore<PairPrices>({
 		symbol,
 		prices: [],
 	});
 
-	const updateParameters: PriceUpdateParameters = {
-		latest: empty,
+	const parameters: WithLatestParameters<Price> = {
+		latest: [],
 		maxLength: 10,
 	};
-	const fn = pushPrice.bind(updateParameters);
+
+	// Prettier will remove the parenthesis resulting in:
+	//   "An instantiation expression cannot be followed by a property access."
+	// prettier-ignore
+	const fn = (withLatestPrices<Price>).bind(parameters);
 	const tuple: [PricesStore, PushPriceFn] = [
 		pairPrices,
-		(latest: Price) => {
-			updateParameters.latest = latest;
+		(latest: Price[]) => {
+			parameters.latest = latest;
 			setPairPrices('prices', fn);
 		},
 	];
@@ -81,14 +74,9 @@ function makePairPricesStore(empty: Price, symbol: string) {
 
 const [priceStores, pushFns] = (() => {
 	const stores = new Map<string, Store<PairPrices>>();
-	const setters = new Map<string, (latest: Price) => void>();
-	const emptyPrice = {
-		timestamp: new Date(),
-		bid: '',
-		ask: '',
-	};
+	const setters = new Map<string, (latest: Price[]) => void>();
 	for (const symbol of SYMBOLS.keys()) {
-		const [store, push] = makePairPricesStore(emptyPrice, symbol);
+		const [store, push] = makePricesStore(symbol);
 		stores.set(symbol, store);
 		setters.set(symbol, push);
 	}
@@ -109,10 +97,10 @@ function onMessage(message: MessageEvent<string>) {
 
 	// De-multiplex event by pushing
 	// it onto the matching exchange pair signal
-	const pushPrice = pushFns.get(data.symbol);
-	if (!pushPrice) return;
+	const push = pushFns.get(data.symbol);
+	if (!push) return;
 
-	pushPrice(data.price);
+	push(data.prices);
 }
 
 function stopEventSource() {
