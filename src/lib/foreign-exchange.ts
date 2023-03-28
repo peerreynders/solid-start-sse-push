@@ -66,4 +66,10 @@ function fromJson(raw: string) {
 	return pair;
 }
 
-export { SYMBOLS, fromJson };
+const timeFormat = new Intl.DateTimeFormat(undefined, {
+	dateStyle: 'short',
+	timeStyle: 'medium',
+});
+const formatTimestamp = timeFormat.format;
+
+export { formatTimestamp, fromJson, SYMBOLS };
