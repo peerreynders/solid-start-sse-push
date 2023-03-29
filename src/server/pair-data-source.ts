@@ -1,5 +1,7 @@
 import { makeRangeValue } from '~/lib/random';
-import type { Pair, PriceJson } from '~/lib/foreign-exchange';
+import { SYMBOLS, type Pair, type PriceJson } from '~/lib/foreign-exchange';
+
+// --- BEGIN Generate values
 
 const FULL_CYCLE = 360; // in degrees
 
@@ -64,7 +66,7 @@ function makePairForJson(config: PairConfig, epochMs: number, noise = 0.0) {
 			{
 				timestamp: epochMs,
 				bid: current.toFixed(fractionDigits),
-				ask: (bid + spread).toFixed(fractionDigits),
+				ask: (current + spread).toFixed(fractionDigits),
 			},
 		],
 	};
@@ -72,11 +74,80 @@ function makePairForJson(config: PairConfig, epochMs: number, noise = 0.0) {
 	return pair;
 }
 
+// --- END Generate Values
+// --- BEGIN Price Cache History
+
+function makeCache(symbol: string) {
+	return {
+		symbol,
+		prices: [] as PriceJson[],
+		next: 0,
+	};
+}
+
+type PriceCache = ReturnType<typeof makeCache>;
+
+const CACHE_SIZE = 10;
+const priceCache = (() => {
+	const cache = new Map<string, PriceCache>();
+	for (const symbol of SYMBOLS.keys()) cache.set(symbol, makeCache(symbol));
+	return cache;
+})();
+
+function cachePrice(pair: Pair<PriceJson>) {
+	const cache = priceCache.get(pair.symbol);
+	if (!cache) return;
+
+	const price = pair.prices[0];
+	const next = cache.next;
+	cache.next = (next + 1) % CACHE_SIZE;
+
+	if (cache.prices.length >= CACHE_SIZE) {
+		cache.prices[next] = price;
+		return;
+	}
+
+	cache.prices.push(price);
+}
+
+function copyHistory({ next, prices }: PriceCache) {
+	if (next !== 0 && prices.length === CACHE_SIZE) {
+		const history = [];
+		for (let i = next, k = 0; k < CACHE_SIZE; i = (i + 1) % CACHE_SIZE, k += 1)
+			history.push(prices[i]);
+
+		return history;
+	}
+
+	return prices.slice();
+}
+
+function makePriceBurst() {
+	const result: string[] = [];
+	for (const cache of priceCache.values()) {
+		if (cache.prices.length < 1) continue;
+
+		result.push(
+			JSON.stringify({
+				symbol: cache.symbol,
+				prices: copyHistory(cache),
+			})
+		);
+	}
+
+	return result;
+}
+
+// --- END Price Cache History
+// --- BEGIN Subscriptions
+
 export type Send = (info: string) => void;
 
 const subscribers = new Set<Send>();
 
-function sendPair(info: string) {
+function sendPair(pair: Pair<PriceJson>) {
+	cachePrice(pair);
+	const info = JSON.stringify(pair);
 	for (const send of subscribers) send(info);
 }
 
@@ -93,7 +164,7 @@ function start() {
 		const now = Date.now();
 		const index = nextConfigIndex();
 		const data = makePairForJson(CONFIG[index], Date.now(), nextNoise());
-		sendPair(JSON.stringify(data));
+		sendPair(data);
 
 		const delay = nextDelay();
 		timeout = setTimeout(sendData, delay - (now - nextSendTime));
@@ -111,15 +182,27 @@ function stop() {
 }
 
 function subscribe(send: Send) {
-	subscribers.add(send);
-	if (!timeout && subscribers.size > 0) start();
+	if (!timeout) start();
+
+	// 0. waiting -> 1. subscribed -> 2. unsubscribed
+	let status = 0;
+	queueMicrotask(() => {
+		if (status > 0) return;
+
+		const burst = makePriceBurst();
+		for (const info of burst) send(info);
+
+		subscribers.add(send);
+		status = 1;
+	});
 
 	return () => {
-		const result = subscribers.delete(send);
-		if (subscribers.size < 1 && timeout) stop();
-
-		return result;
+		const previous = status;
+		status = 2;
+		return previous < 1 ? true : subscribers.delete(send);
 	};
 }
 
-export { subscribe };
+// --- END Subscriptions
+
+export { start, stop, subscribe };
