@@ -1,5 +1,26 @@
+import { isTimeValue } from '~/lib/helpers';
 import { makeRangeValue } from '~/lib/random';
-import { SYMBOLS, type Pair, type PriceJson } from '~/lib/foreign-exchange';
+import {
+	SYMBOLS,
+	type FxDataMessage,
+	type PriceJson,
+} from '~/lib/foreign-exchange';
+
+import { InitArgument } from './solid-start-sse-support';
+
+function makeFxDataMessage(
+	symbol: string,
+	timestamp: number,
+	prices: PriceJson[]
+) {
+	const message: FxDataMessage = {
+		kind: 'fx-data',
+		timestamp,
+		symbol,
+		prices,
+	};
+	return message;
+}
 
 // --- BEGIN Generate values
 
@@ -51,7 +72,7 @@ const cyclicSpread = (
 	weight *
 	Math.sin(toRadians(epochSecs % cycle.length) * cycle.factor);
 
-function makePairForJson(config: PairConfig, epochMs: number, noise = 0.0) {
+function generateFxData(config: PairConfig, epochMs: number, noise = 0.0) {
 	const { bid, fractionDigits, long, short, spread } = config;
 	const epochSecs = epochMs / 1000;
 	const current =
@@ -60,18 +81,13 @@ function makePairForJson(config: PairConfig, epochMs: number, noise = 0.0) {
 		cyclicSpread(spread, 100, long, epochSecs) +
 		cyclicSpread(spread, 30, short, epochSecs);
 
-	const pair: Pair<PriceJson> = {
-		symbol: config.symbol,
-		prices: [
-			{
-				timestamp: epochMs,
-				bid: current.toFixed(fractionDigits),
-				ask: (current + spread).toFixed(fractionDigits),
-			},
-		],
-	};
-
-	return pair;
+	return makeFxDataMessage(config.symbol, epochMs, [
+		{
+			timestamp: epochMs,
+			bid: current.toFixed(fractionDigits),
+			ask: (current + spread).toFixed(fractionDigits),
+		},
+	]);
 }
 
 // --- END Generate Values
@@ -94,11 +110,11 @@ const priceCache = (() => {
 	return cache;
 })();
 
-function cachePrice(pair: Pair<PriceJson>) {
-	const cache = priceCache.get(pair.symbol);
+function cachePrice({ symbol, prices: [price] }: FxDataMessage) {
+	const cache = priceCache.get(symbol);
 	if (!cache) return;
 
-	const price = pair.prices[0];
+	// Replace least recent price
 	const next = cache.next;
 	cache.next = (next + 1) % CACHE_SIZE;
 
@@ -110,29 +126,29 @@ function cachePrice(pair: Pair<PriceJson>) {
 	cache.prices.push(price);
 }
 
-function copyHistory({ next, prices }: PriceCache) {
-	if (next !== 0 && prices.length === CACHE_SIZE) {
-		const history = [];
-		for (let i = next, k = 0; k < CACHE_SIZE; i = (i + 1) % CACHE_SIZE, k += 1)
-			history.push(prices[i]);
+function copyHistory({ next, prices }: PriceCache, after: number) {
+	const history = [];
+	const length = prices.length;
+	for (
+		let i = next < length ? next : 0, k = 0;
+		k < length;
+		i = (i + 1) % length, k += 1
+	)
+		if (prices[i].timestamp > after) history.push(prices[i]);
 
-		return history;
-	}
-
-	return prices.slice();
+	return history;
 }
 
-function makePriceBurst() {
+function makePriceBurst(now: number, after: number) {
 	const result: string[] = [];
+
 	for (const cache of priceCache.values()) {
 		if (cache.prices.length < 1) continue;
 
-		result.push(
-			JSON.stringify({
-				symbol: cache.symbol,
-				prices: copyHistory(cache),
-			})
-		);
+		const history = copyHistory(cache, after);
+		if (history.length < 1) continue;
+
+		result.push(JSON.stringify(makeFxDataMessage(cache.symbol, now, history)));
 	}
 
 	return result;
@@ -141,14 +157,24 @@ function makePriceBurst() {
 // --- END Price Cache History
 // --- BEGIN Subscriptions
 
-export type Send = (info: string) => void;
+// EXP
+let count = 60;
+let unsub: (() => void) | undefined;
 
-const subscribers = new Set<Send>();
+const subscribers = new Set<InitArgument['send']>();
 
-function sendPair(pair: Pair<PriceJson>) {
-	cachePrice(pair);
-	const info = JSON.stringify(pair);
-	for (const send of subscribers) send(info);
+function sendFxData(message: FxDataMessage) {
+	cachePrice(message);
+	const id = message.timestamp.toString();
+	const json = JSON.stringify(message);
+	for (const send of subscribers) send(json, id);
+
+	// EXP
+	count -= 1;
+	if (count <= 0) {
+		if (unsub) unsub();
+		count = 60;
+	}
 }
 
 let timeout: ReturnType<typeof setTimeout> | undefined = undefined;
@@ -163,8 +189,8 @@ function start() {
 	const sendData = () => {
 		const now = Date.now();
 		const index = nextConfigIndex();
-		const data = makePairForJson(CONFIG[index], Date.now(), nextNoise());
-		sendPair(data);
+		const data = generateFxData(CONFIG[index], Date.now(), nextNoise());
+		sendFxData(data);
 
 		const delay = nextDelay();
 		timeout = setTimeout(sendData, delay - (now - nextSendTime));
@@ -181,26 +207,38 @@ function stop() {
 	timeout = undefined;
 }
 
-function subscribe(send: Send) {
+function subscribe({ send, close, lastEventId }: InitArgument) {
 	if (!timeout) start();
+
+	const id = Number(lastEventId);
+	const lastTime = Number.isNaN(id) || !isTimeValue(id) ? 0 : id;
 
 	// 0. waiting -> 1. subscribed -> 2. unsubscribed
 	let status = 0;
 	queueMicrotask(() => {
 		if (status > 0) return;
 
-		const burst = makePriceBurst();
-		for (const info of burst) send(info);
+		const now = Date.now();
+		const burst = makePriceBurst(now, lastTime);
+		const id = now.toString();
+		for (const info of burst) send(info, id);
 
 		subscribers.add(send);
 		status = 1;
 	});
 
-	return () => {
+	const unsubscribe = () => {
 		const previous = status;
 		status = 2;
 		return previous < 1 ? true : subscribers.delete(send);
 	};
+
+	// EXP
+	unsub = () => {
+		close();
+		unsubscribe();
+	};
+	return unsubscribe;
 }
 
 // --- END Subscriptions

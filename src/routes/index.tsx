@@ -5,17 +5,17 @@ import { formatTimestamp, SYMBOLS } from '~/lib/foreign-exchange';
 import {
 	disposePairData,
 	usePairData,
-	type PricesStore,
+	type PairStore,
 } from '~/components/pair-data-context';
 
 // import { scheduleCompare } from '~/lib/row-monitor';
 
-function latestBid(store: PricesStore) {
+function latestBid(store: PairStore) {
 	const length = store.prices.length;
 	return length > 1 ? store.prices[length - 1].bid : '';
 }
 
-function pricesRows(store: PricesStore) {
+function pricesRows(store: PairStore) {
 	// if (store.symbol === 'USD-JPY') scheduleCompare('USD-JPY');
 	const prices = store.prices.slice();
 	return prices.reverse();
@@ -24,7 +24,7 @@ function pricesRows(store: PricesStore) {
 export default function Home() {
 	const priceStores = usePairData();
 
-	const entries: { store: PricesStore; symbol: string; label: string }[] = [];
+	const entries: { store: PairStore; symbol: string; label: string }[] = [];
 	for (const [symbol, label] of SYMBOLS) {
 		const store = priceStores.get(symbol);
 		if (!store) continue;

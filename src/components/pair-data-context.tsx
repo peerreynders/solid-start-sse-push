@@ -10,24 +10,29 @@ import { createStore, type Store } from 'solid-js/store';
 import server$, { ServerFunctionEvent } from 'solid-start/server';
 import {
 	SYMBOLS,
+	fromFxData,
 	fromJson,
 	withLatestPrices,
-	type PairPrices,
+	type FxDataMessage,
+	type Pair,
 	type Price,
 	type WithLatestParameters,
 } from '~/lib/foreign-exchange';
 
 // --- START server side ---
 
-import { eventStream } from '~/server/solid-start-sse-support';
+import {
+	eventStream,
+	type EventStreamInit,
+} from '~/server/solid-start-sse-support';
 // NOTE: call `listen()` in `entry-server.tsx`
 import { subscribe as subscribeToSource } from '~/server/pair-data-source';
 
 async function connectServerSource(this: ServerFunctionEvent) {
 	let unsubscribe: (() => void) | undefined = undefined;
 
-	const init = (send: (data: string) => void) => {
-		unsubscribe = subscribeToSource(send);
+	const init: EventStreamInit = (argument) => {
+		unsubscribe = subscribeToSource(argument);
 
 		return () => {
 			if (unsubscribe) {
@@ -43,11 +48,11 @@ async function connectServerSource(this: ServerFunctionEvent) {
 
 // --- END server side ---
 
-export type PricesStore = Store<PairPrices>;
+export type PairStore = Store<Pair>;
 type PushPriceFn = (latest: Price[]) => void;
 
 function makePricesStore(symbol: string) {
-	const [pairPrices, setPairPrices] = createStore<PairPrices>({
+	const [pairPrices, setPairPrices] = createStore<Pair>({
 		symbol,
 		prices: [],
 	});
@@ -61,7 +66,7 @@ function makePricesStore(symbol: string) {
 	//   "An instantiation expression cannot be followed by a property access."
 	// prettier-ignore
 	const fn = (withLatestPrices<Price>).bind(parameters);
-	const tuple: [PricesStore, PushPriceFn] = [
+	const tuple: [PairStore, PushPriceFn] = [
 		pairPrices,
 		(latest: Price[]) => {
 			parameters.latest = latest;
@@ -73,7 +78,7 @@ function makePricesStore(symbol: string) {
 }
 
 const [priceStores, pushFns] = (() => {
-	const stores = new Map<string, Store<PairPrices>>();
+	const stores = new Map<string, PairStore>();
 	const setters = new Map<string, (latest: Price[]) => void>();
 	for (const symbol of SYMBOLS.keys()) {
 		const [store, push] = makePricesStore(symbol);
@@ -91,16 +96,30 @@ const decrement = (n: number) => (n > 0 ? n - 1 : 0);
 
 let eventSource: EventSource | undefined;
 
-function onMessage(message: MessageEvent<string>) {
-	const data = fromJson(message.data);
-	if (!data) return;
+let lastEventId: string | undefined;
 
-	// De-multiplex event by pushing
+function onFxData(message: FxDataMessage) {
+	const pair = fromFxData(message);
+
+	// De-multiplex message by pushing
 	// it onto the matching exchange pair signal
-	const push = pushFns.get(data.symbol);
+	const push = pushFns.get(pair.symbol);
 	if (!push) return;
 
-	push(data.prices);
+	push(pair.prices);
+}
+
+function onMessage(event: MessageEvent<string>) {
+	if (event.lastEventId) lastEventId = event.lastEventId;
+	// EXP
+	lastEventId;
+	const message = fromJson(event.data);
+	if (!message) return;
+
+	switch (message.kind) {
+		case 'fx-data':
+			return onFxData(message);
+	}
 }
 
 function stopEventSource() {
@@ -119,11 +138,11 @@ function startEventSource(href: string) {
 }
 
 function setupEventData() {
-	const handle = server$(connectServerSource);
+	const fxstream = server$(connectServerSource);
 
 	createEffect(() => {
 		if (!eventSource) {
-			if (refCount() > 0) startEventSource(handle.url);
+			if (refCount() > 0) startEventSource(fxstream.url);
 		} else {
 			if (refCount() < 1) stopEventSource();
 		}

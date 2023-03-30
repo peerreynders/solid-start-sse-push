@@ -10,12 +10,19 @@ export type Price = Omit<PriceJson, 'timestamp'> & {
 	timestamp: Date;
 };
 
-export type Pair<P> = {
+export type FxDataMessage = {
+	kind: 'fx-data';
 	symbol: string; // Exchange Pair
-	prices: P[];
+	timestamp: number;
+	prices: PriceJson[];
 };
 
-export type PairPrices = Pair<Price>;
+export type FxMessage = FxDataMessage;
+
+export type Pair = {
+	symbol: string;
+	prices: Price[];
+};
 
 const SYMBOLS = new Map<string, string>([
 	['USD-JPY', 'USD/JPY'],
@@ -44,8 +51,18 @@ function isPriceJson(data: unknown): data is PriceJson {
 	return true;
 }
 
-const isPriceHistory = (data: unknown): data is PriceJson[] =>
-	Array.isArray(data) ? data.every(isPriceJson) : false;
+function isFxData(message: Record<string, unknown>): message is FxDataMessage {
+	if (message.kind !== 'fx-data') return false;
+
+	if (!isTimeValue(message.timestamp)) return false;
+
+	const symbol = message.symbol;
+	if (typeof symbol !== 'string' || !SYMBOLS.has(symbol)) return false;
+
+	return Array.isArray(message.prices)
+		? message.prices.every(isPriceJson)
+		: false;
+}
 
 const toPrice = ({ timestamp, bid, ask }: PriceJson) => ({
 	timestamp: new Date(timestamp),
@@ -54,29 +71,31 @@ const toPrice = ({ timestamp, bid, ask }: PriceJson) => ({
 });
 
 function fromJson(raw: string) {
-	const data = JSON.parse(raw) as Record<string, unknown>;
-	if (typeof data !== 'object' || data === null) return undefined;
+	const message = JSON.parse(raw) as Record<string, unknown>;
+	if (typeof message !== 'object' || message === null) return undefined;
 
-	const symbol = data.symbol;
-	if (typeof symbol !== 'string' || !SYMBOLS.has(symbol)) return undefined;
+	if (isFxData(message)) return message;
 
-	const history = data.prices;
-	if (!isPriceHistory(history)) return undefined;
+	return undefined;
+}
 
-	const pair: Pair<Price> = {
+function fromFxData({ symbol, prices: history }: FxDataMessage) {
+	const pair: Pair = {
 		symbol,
 		prices: history.map(toPrice),
 	};
-
 	return pair;
 }
 
-export type WithLatestParameters<P> = {
-	latest: P[]; // more recent last
+export type WithLatestParameters<P extends Price | PriceJson> = {
+	latest: P[];
 	maxLength: number;
 };
 
-function withLatestPrices<P>(this: WithLatestParameters<P>, history: P[]) {
+function withLatestPrices<P extends Price | PriceJson>(
+	this: WithLatestParameters<P>,
+	history: P[]
+) {
 	const length = this.latest.length;
 
 	if (length >= this.maxLength) return this.latest.slice(-this.maxLength);
@@ -93,4 +112,4 @@ const timeFormat = new Intl.DateTimeFormat(undefined, {
 });
 const formatTimestamp = timeFormat.format;
 
-export { formatTimestamp, fromJson, withLatestPrices, SYMBOLS };
+export { formatTimestamp, fromFxData, fromJson, withLatestPrices, SYMBOLS };

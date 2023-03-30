@@ -68,6 +68,7 @@ function notifySubscribers(id: string, info: Info) {
 }
 
 const SSE_CORRELATE = 'x-solid-start-sse-support';
+const SSE_LAST_EVENT_ID = 'Last-Event-ID';
 const channel = process.env.NODE_ENV?.startsWith('dev')
 	? new BroadcastChannel('solid-start-sse-support')
 	: undefined;
@@ -103,18 +104,28 @@ function subscribe(request: Request, notify: Notify) {
 	return addSubscriber(id, notify);
 }
 
-export type EventStreamInit = (send: (data: string) => void) => () => void;
+export type InitArgument = {
+	send: (data: string, id: string) => void;
+	close: () => void;
+	lastEventId: string | undefined;
+};
+
+export type EventStreamInit = (init: InitArgument) => () => void;
 
 function eventStream(request: Request, init: EventStreamInit) {
+	const lastEventId = request.headers.get(SSE_LAST_EVENT_ID) ?? undefined;
+
 	const stream = new ReadableStream({
 		start(controller) {
 			const encoder = new TextEncoder();
-			const send = (data: string) => {
-				controller.enqueue(encoder.encode('data: ' + data + '\n\n'));
+			const send = (data: string, id?: string) => {
+				const payload = (id ? 'id:' + id + '\ndata:' : 'data:') + data + '\n\n';
+				controller.enqueue(encoder.encode(payload));
 			};
+
+			let cleanup: (() => void) | undefined;
 			let unsubscribe: (() => boolean) | undefined = undefined;
 
-			let cleanup: (() => void) | undefined = init(send);
 			const close = () => {
 				if (!cleanup) return;
 				cleanup();
@@ -123,6 +134,7 @@ function eventStream(request: Request, init: EventStreamInit) {
 				controller.close();
 			};
 
+			cleanup = init({ send, close, lastEventId });
 			unsubscribe = subscribe(request, (info) => {
 				if (info.source === 'request' && info.name === 'close') {
 					close();
