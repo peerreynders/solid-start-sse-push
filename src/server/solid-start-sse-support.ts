@@ -105,7 +105,7 @@ function subscribe(request: Request, notify: Notify) {
 }
 
 export type InitArgument = {
-	send: (data: string, id: string) => void;
+	send: (data: string, id?: string) => void;
 	close: () => void;
 	lastEventId: string | undefined;
 };
@@ -113,7 +113,10 @@ export type InitArgument = {
 export type EventStreamInit = (init: InitArgument) => () => void;
 
 function eventStream(request: Request, init: EventStreamInit) {
-	const lastEventId = request.headers.get(SSE_LAST_EVENT_ID) ?? undefined;
+	const lastEventId =
+		request.headers.get(SSE_LAST_EVENT_ID) ??
+		new URL(request.url).searchParams.get('lastEventId') ??
+		undefined;
 
 	const stream = new ReadableStream({
 		start(controller) {

@@ -157,27 +157,64 @@ function makePriceBurst(now: number, after: number) {
 // --- END Price Cache History
 // --- BEGIN Subscriptions
 
-// EXP
-let count = 60;
-let unsub: (() => void) | undefined;
-
 const subscribers = new Set<InitArgument['send']>();
+let lastSend = 0;
 
-function sendFxData(message: FxDataMessage) {
-	cachePrice(message);
-	const id = message.timestamp.toString();
-	const json = JSON.stringify(message);
-	for (const send of subscribers) send(json, id);
+function sendEvent(now: number, data: string, id?: string) {
+	for (const send of subscribers) send(data, id);
 
-	// EXP
-	count -= 1;
-	if (count <= 0) {
-		if (unsub) unsub();
-		count = 60;
-	}
+	lastSend = now;
 }
 
-let timeout: ReturnType<typeof setTimeout> | undefined = undefined;
+function sendKeepAlive() {
+	const now = Date.now();
+
+	const json = JSON.stringify({
+		kind: 'keep-alive',
+		timestamp: now,
+	});
+	sendEvent(now, json);
+}
+
+function sendFxData(now: number, message: FxDataMessage) {
+	cachePrice(message);
+	const id = now.toString();
+	const json = JSON.stringify(message);
+	sendEvent(now, json, id);
+}
+
+const KEEP_ALIVE_TIMEOUT = 4000;
+const KEEP_ALIVE_MS = 3 * KEEP_ALIVE_TIMEOUT;
+let keepAliveStart = 0;
+let keepAliveTimeout: ReturnType<typeof setTimeout> | undefined;
+
+function keepAlive() {
+	const now = Date.now();
+	const delay =
+		KEEP_ALIVE_TIMEOUT - ((now - keepAliveStart) % KEEP_ALIVE_TIMEOUT);
+	keepAliveTimeout = setTimeout(keepAlive, delay);
+
+	const silence = now - lastSend;
+	if (silence < KEEP_ALIVE_MS) return;
+
+	sendKeepAlive();
+}
+
+function stopKeepAlive() {
+	if (!keepAliveTimeout) return;
+
+	clearTimeout(keepAliveTimeout);
+	keepAliveTimeout = undefined;
+}
+
+function startKeepAlive() {
+	stopKeepAlive();
+
+	keepAliveStart = Date.now();
+	keepAliveTimeout = setTimeout(keepAlive, KEEP_ALIVE_TIMEOUT);
+}
+
+let timeout: ReturnType<typeof setTimeout> | undefined;
 
 function start() {
 	const nextDelay = makeRangeValue(250, 500); // 250-500 ms
@@ -190,24 +227,27 @@ function start() {
 		const now = Date.now();
 		const index = nextConfigIndex();
 		const data = generateFxData(CONFIG[index], Date.now(), nextNoise());
-		sendFxData(data);
+		sendFxData(now, data);
 
 		const delay = nextDelay();
 		timeout = setTimeout(sendData, delay - (now - nextSendTime));
 
 		nextSendTime = now + delay;
 	};
+
 	sendData();
+	startKeepAlive();
 }
 
 function stop() {
+	stopKeepAlive();
 	if (!timeout) return;
 
 	clearTimeout(timeout);
 	timeout = undefined;
 }
 
-function subscribe({ send, close, lastEventId }: InitArgument) {
+function subscribe({ send, lastEventId }: InitArgument) {
 	if (!timeout) start();
 
 	const id = Number(lastEventId);
@@ -233,11 +273,6 @@ function subscribe({ send, close, lastEventId }: InitArgument) {
 		return previous < 1 ? true : subscribers.delete(send);
 	};
 
-	// EXP
-	unsub = () => {
-		close();
-		unsubscribe();
-	};
 	return unsubscribe;
 }
 

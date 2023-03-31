@@ -17,7 +17,12 @@ export type FxDataMessage = {
 	prices: PriceJson[];
 };
 
-export type FxMessage = FxDataMessage;
+export type KeepAliveMessage = {
+	kind: 'keep-alive';
+	timestamp: number;
+};
+
+export type FxMessage = FxDataMessage | KeepAliveMessage;
 
 export type Pair = {
 	symbol: string;
@@ -64,6 +69,14 @@ function isFxData(message: Record<string, unknown>): message is FxDataMessage {
 		: false;
 }
 
+function isKeepAlive(
+	message: Record<string, unknown>
+): message is KeepAliveMessage {
+	if (message.kind !== 'keep-alive') return false;
+
+	return isTimeValue(message.timestamp);
+}
+
 const toPrice = ({ timestamp, bid, ask }: PriceJson) => ({
 	timestamp: new Date(timestamp),
 	bid,
@@ -75,6 +88,8 @@ function fromJson(raw: string) {
 	if (typeof message !== 'object' || message === null) return undefined;
 
 	if (isFxData(message)) return message;
+
+	if (isKeepAlive(message)) return message;
 
 	return undefined;
 }

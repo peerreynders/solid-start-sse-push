@@ -95,8 +95,23 @@ const increment = (n: number) => n + 1;
 const decrement = (n: number) => (n > 0 ? n - 1 : 0);
 
 let eventSource: EventSource | undefined;
-
 let lastEventId: string | undefined;
+
+const KEEP_ALIVE_MS = 20000;
+let keepAliveTimeout: ReturnType<typeof setTimeout> | undefined;
+let start: () => void | undefined;
+
+function clearKeepAlive() {
+	if (!keepAliveTimeout) return;
+
+	clearTimeout(keepAliveTimeout);
+	keepAliveTimeout = undefined;
+}
+
+function setKeepAlive() {
+	clearKeepAlive();
+	keepAliveTimeout = setTimeout(start, KEEP_ALIVE_MS);
+}
 
 function onFxData(message: FxDataMessage) {
 	const pair = fromFxData(message);
@@ -111,18 +126,21 @@ function onFxData(message: FxDataMessage) {
 
 function onMessage(event: MessageEvent<string>) {
 	if (event.lastEventId) lastEventId = event.lastEventId;
-	// EXP
-	lastEventId;
+	setKeepAlive();
+
 	const message = fromJson(event.data);
 	if (!message) return;
 
 	switch (message.kind) {
 		case 'fx-data':
 			return onFxData(message);
+
+		case 'keep-alive':
+			return;
 	}
 }
 
-function stopEventSource() {
+function disconnect() {
 	if (!eventSource) return;
 
 	eventSource.removeEventListener('message', onMessage);
@@ -130,21 +148,34 @@ function stopEventSource() {
 	eventSource = undefined;
 }
 
-function startEventSource(href: string) {
-	if (eventSource) stopEventSource();
+function connect(path: string) {
+	disconnect();
 
+	const href = lastEventId
+		? `${path}?lastEventId=${encodeURIComponent(lastEventId)}`
+		: path;
 	eventSource = new EventSource(href);
 	eventSource.addEventListener('message', onMessage);
 }
 
+function stop() {
+	clearKeepAlive();
+	disconnect();
+	lastEventId = undefined;
+}
+
 function setupEventData() {
 	const fxstream = server$(connectServerSource);
+	start = () => {
+		setKeepAlive();
+		connect(fxstream.url);
+	};
 
 	createEffect(() => {
 		if (!eventSource) {
-			if (refCount() > 0) startEventSource(fxstream.url);
+			if (refCount() > 0) start();
 		} else {
-			if (refCount() < 1) stopEventSource();
+			if (refCount() < 1) stop();
 		}
 	});
 }
