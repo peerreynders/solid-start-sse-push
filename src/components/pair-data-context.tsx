@@ -10,13 +10,11 @@ import { createStore, type Store } from 'solid-js/store';
 import server$, { ServerFunctionEvent } from 'solid-start/server';
 import {
 	SYMBOLS,
-	fromFxData,
 	fromJson,
-	withLatestPrices,
-	type FxDataMessage,
+	fromPriceJson,
 	type Pair,
 	type Price,
-	type WithLatestParameters,
+	type PriceJson,
 } from '~/lib/foreign-exchange';
 
 // --- START server side ---
@@ -49,7 +47,38 @@ async function connectServerSource(this: ServerFunctionEvent) {
 // --- END server side ---
 
 export type PairStore = Store<Pair>;
-type PushPriceFn = (latest: Price[]) => void;
+type PushPriceFn = (latest: PriceJson[]) => void;
+
+type WithLatestArguments = {
+	latest: PriceJson[];
+	maxLength: number;
+};
+
+// Constraints:
+//
+// 1. The `history` reference has to change (to `prices`)
+//    to establish that the history has changed.
+// 2. The references to the **existing** `Price` elements
+//    in the `history` have to be stable so `For`
+//    will correctly reuse the DOM rows of the
+//    prices that have NOT changed but simply changed
+//    position.
+//
+function withLatestPrices(this: WithLatestArguments, history: Price[]) {
+	const { maxLength, latest } = this;
+	const prices = [];
+
+	// Transfer `latest` first to `prices`; most recent price first order.
+	let i = 0;
+	for (let j = 0; i < maxLength && j < latest.length; i += 1, j += 1)
+		prices[i] = fromPriceJson(latest[j]);
+
+	// Fill up `prices` with existing `history` prices up to `maxLength`
+	for (let k = 0; i < maxLength && k < history.length; i += 1, k += 1)
+		prices[i] = history[k];
+
+	return prices;
+}
 
 function makePricesStore(symbol: string) {
 	const [pairPrices, setPairPrices] = createStore<Pair>({
@@ -57,7 +86,7 @@ function makePricesStore(symbol: string) {
 		prices: [],
 	});
 
-	const parameters: WithLatestParameters<Price> = {
+	const presetArgs: WithLatestArguments = {
 		latest: [],
 		maxLength: 10,
 	};
@@ -65,11 +94,11 @@ function makePricesStore(symbol: string) {
 	// Prettier will remove the parenthesis resulting in:
 	//   "An instantiation expression cannot be followed by a property access."
 	// prettier-ignore
-	const fn = (withLatestPrices<Price>).bind(parameters);
+	const fn = withLatestPrices.bind(presetArgs);
 	const tuple: [PairStore, PushPriceFn] = [
 		pairPrices,
-		(latest: Price[]) => {
-			parameters.latest = latest;
+		(latest: PriceJson[]) => {
+			presetArgs.latest = latest;
 			setPairPrices('prices', fn);
 		},
 	];
@@ -79,7 +108,7 @@ function makePricesStore(symbol: string) {
 
 const [priceStores, pushFns] = (() => {
 	const stores = new Map<string, PairStore>();
-	const setters = new Map<string, (latest: Price[]) => void>();
+	const setters = new Map<string, PushPriceFn>();
 	for (const symbol of SYMBOLS.keys()) {
 		const [store, push] = makePricesStore(symbol);
 		stores.set(symbol, store);
@@ -113,17 +142,6 @@ function setKeepAlive() {
 	keepAliveTimeout = setTimeout(start, KEEP_ALIVE_MS);
 }
 
-function onFxData(message: FxDataMessage) {
-	const pair = fromFxData(message);
-
-	// De-multiplex message by pushing
-	// it onto the matching exchange pair signal
-	const push = pushFns.get(pair.symbol);
-	if (!push) return;
-
-	push(pair.prices);
-}
-
 function onMessage(event: MessageEvent<string>) {
 	if (event.lastEventId) lastEventId = event.lastEventId;
 	setKeepAlive();
@@ -132,8 +150,16 @@ function onMessage(event: MessageEvent<string>) {
 	if (!message) return;
 
 	switch (message.kind) {
-		case 'fx-data':
-			return onFxData(message);
+		case 'fx-data': {
+			// De-multiplex messages by pushing
+			// prices onto the matching exchange pair store
+			const { symbol, prices } = message;
+			const push = pushFns.get(symbol);
+			if (!push) return;
+
+			push(prices);
+			return;
+		}
 
 		case 'keep-alive':
 			return;

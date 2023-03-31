@@ -129,12 +129,17 @@ function cachePrice({ symbol, prices: [price] }: FxDataMessage) {
 function copyHistory({ next, prices }: PriceCache, after: number) {
 	const history = [];
 	const length = prices.length;
+	// accumulate history most recent first
+	// only with timestamps more recent than `after`
 	for (
-		let i = next < length ? next : 0, k = 0;
+		let i = next > 0 ? next - 1 : length - 1, k = 0;
 		k < length;
-		i = (i + 1) % length, k += 1
-	)
-		if (prices[i].timestamp > after) history.push(prices[i]);
+		i = i > 0 ? i - 1 : length - 1, k += 1
+	) {
+		if (prices[i].timestamp <= after) break;
+
+		history.push(prices[i]);
+	}
 
 	return history;
 }
@@ -180,23 +185,21 @@ function sendFxData(now: number, message: FxDataMessage) {
 	cachePrice(message);
 	const id = now.toString();
 	const json = JSON.stringify(message);
+
 	sendEvent(now, json, id);
 }
 
-const KEEP_ALIVE_TIMEOUT = 4000;
-const KEEP_ALIVE_MS = 3 * KEEP_ALIVE_TIMEOUT;
-let keepAliveStart = 0;
+const KEEP_ALIVE_MS = 15000; // 15 seconds
 let keepAliveTimeout: ReturnType<typeof setTimeout> | undefined;
 
 function keepAlive() {
 	const now = Date.now();
+	const silence = now - lastSend;
 	const delay =
-		KEEP_ALIVE_TIMEOUT - ((now - keepAliveStart) % KEEP_ALIVE_TIMEOUT);
+		silence < KEEP_ALIVE_MS ? KEEP_ALIVE_MS - silence : KEEP_ALIVE_MS;
 	keepAliveTimeout = setTimeout(keepAlive, delay);
 
-	const silence = now - lastSend;
-	if (silence < KEEP_ALIVE_MS) return;
-
+	if (delay < KEEP_ALIVE_MS) return;
 	sendKeepAlive();
 }
 
@@ -209,9 +212,7 @@ function stopKeepAlive() {
 
 function startKeepAlive() {
 	stopKeepAlive();
-
-	keepAliveStart = Date.now();
-	keepAliveTimeout = setTimeout(keepAlive, KEEP_ALIVE_TIMEOUT);
+	keepAliveTimeout = setTimeout(keepAlive, KEEP_ALIVE_MS);
 }
 
 let timeout: ReturnType<typeof setTimeout> | undefined;

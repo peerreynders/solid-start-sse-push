@@ -10,16 +10,8 @@ import {
 
 // import { scheduleCompare } from '~/lib/row-monitor';
 
-function latestBid(store: PairStore) {
-	const length = store.prices.length;
-	return length > 1 ? store.prices[length - 1].bid : '';
-}
-
-function pricesRows(store: PairStore) {
-	// if (store.symbol === 'USD-JPY') scheduleCompare('USD-JPY');
-	const prices = store.prices.slice();
-	return prices.reverse();
-}
+const latestBid = (store: PairStore) =>
+	store.prices.length > 1 ? store.prices[0].bid : '';
 
 export default function Home() {
 	const priceStores = usePairData();
@@ -66,7 +58,7 @@ export default function Home() {
 								</tr>
 							</thead>
 							<tbody id={`history--${symbol}`}>
-								<For each={pricesRows(store)}>
+								<For each={store.prices}>
 									{(price) => (
 										<tr>
 											<th>{formatTimestamp(price.timestamp)}</th>

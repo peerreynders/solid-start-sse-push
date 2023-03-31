@@ -77,7 +77,7 @@ function isKeepAlive(
 	return isTimeValue(message.timestamp);
 }
 
-const toPrice = ({ timestamp, bid, ask }: PriceJson) => ({
+const fromPriceJson = ({ timestamp, bid, ask }: PriceJson) => ({
 	timestamp: new Date(timestamp),
 	bid,
 	ask,
@@ -94,37 +94,10 @@ function fromJson(raw: string) {
 	return undefined;
 }
 
-function fromFxData({ symbol, prices: history }: FxDataMessage) {
-	const pair: Pair = {
-		symbol,
-		prices: history.map(toPrice),
-	};
-	return pair;
-}
-
-export type WithLatestParameters<P extends Price | PriceJson> = {
-	latest: P[];
-	maxLength: number;
-};
-
-function withLatestPrices<P extends Price | PriceJson>(
-	this: WithLatestParameters<P>,
-	history: P[]
-) {
-	const length = this.latest.length;
-
-	if (length >= this.maxLength) return this.latest.slice(-this.maxLength);
-
-	const prices = history.slice(length - this.maxLength);
-	for (const price of this.latest) prices.push(price);
-
-	return prices;
-}
-
 const timeFormat = new Intl.DateTimeFormat(undefined, {
 	dateStyle: 'short',
 	timeStyle: 'medium',
 });
 const formatTimestamp = timeFormat.format;
 
-export { formatTimestamp, fromFxData, fromJson, withLatestPrices, SYMBOLS };
+export { formatTimestamp, fromJson, fromPriceJson, SYMBOLS };
