@@ -22,7 +22,13 @@ export type KeepAliveMessage = {
 	timestamp: number;
 };
 
-export type FxMessage = FxDataMessage | KeepAliveMessage;
+export type ShutdownMessage = {
+	kind: 'shutdown';
+	timestamp: number;
+	until: number;
+};
+
+export type FxMessage = FxDataMessage | KeepAliveMessage | ShutdownMessage;
 
 export type Pair = {
 	symbol: string;
@@ -77,6 +83,14 @@ function isKeepAlive(
 	return isTimeValue(message.timestamp);
 }
 
+function isShutdown(
+	message: Record<string, unknown>
+): message is ShutdownMessage {
+	if (message.kind !== 'shutdown') return false;
+
+	return isTimeValue(message.timestamp) && isTimeValue(message.until);
+}
+
 const fromPriceJson = ({ timestamp, bid, ask }: PriceJson) => ({
 	timestamp: new Date(timestamp),
 	bid,
@@ -90,6 +104,8 @@ function fromJson(raw: string) {
 	if (isFxData(message)) return message;
 
 	if (isKeepAlive(message)) return message;
+
+	if (isShutdown(message)) return message;
 
 	return undefined;
 }

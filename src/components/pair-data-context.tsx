@@ -17,20 +17,19 @@ import {
 	type PriceJson,
 } from '~/lib/foreign-exchange';
 
+import { makeRangeValue } from '~/lib/random';
+
 // --- START server side ---
 
-import {
-	eventStream,
-	type EventStreamInit,
-} from '~/server/solid-start-sse-support';
+import { eventStream, type InitSource } from '~/server/solid-start-sse-support';
 // NOTE: call `listen()` in `entry-server.tsx`
 import { subscribe as subscribeToSource } from '~/server/pair-data-source';
 
 async function connectServerSource(this: ServerFunctionEvent) {
 	let unsubscribe: (() => void) | undefined = undefined;
 
-	const init: EventStreamInit = (argument) => {
-		unsubscribe = subscribeToSource(argument);
+	const init: InitSource = (controller) => {
+		unsubscribe = subscribeToSource(controller);
 
 		return () => {
 			if (unsubscribe) {
@@ -127,8 +126,13 @@ let eventSource: EventSource | undefined;
 let lastEventId: string | undefined;
 
 const KEEP_ALIVE_MS = 20000;
+const MAX_PRECONNECT_MS = 5000;
+const MIN_WAIT_MS = 5000;
+const preconnectMs = makeRangeValue(0, MAX_PRECONNECT_MS);
 let keepAliveTimeout: ReturnType<typeof setTimeout> | undefined;
+let scheduledStart: ReturnType<typeof setTimeout> | undefined;
 let start: () => void | undefined;
+let stop: () => void | undefined;
 
 function clearKeepAlive() {
 	if (!keepAliveTimeout) return;
@@ -162,14 +166,31 @@ function onMessage(event: MessageEvent<string>) {
 		}
 
 		case 'keep-alive':
+			console.log('keep-alive');
 			return;
+
+		case 'shutdown': {
+			stop();
+			const delay = message.until - message.timestamp - preconnectMs();
+			console.log(`shutdown ${message.timestamp} ${message.until} ${delay}`);
+			scheduledStart = setTimeout(
+				start,
+				delay > MIN_WAIT_MS ? delay : MIN_WAIT_MS
+			);
+			return;
+		}
 	}
+}
+
+function onError(event: Event) {
+	console.error(event);
 }
 
 function disconnect() {
 	if (!eventSource) return;
 
 	eventSource.removeEventListener('message', onMessage);
+	eventSource.removeEventListener('error', onError);
 	eventSource.close();
 	eventSource = undefined;
 }
@@ -180,28 +201,49 @@ function connect(path: string) {
 	const href = lastEventId
 		? `${path}?lastEventId=${encodeURIComponent(lastEventId)}`
 		: path;
+
 	eventSource = new EventSource(href);
+	eventSource.addEventListener('error', onError);
 	eventSource.addEventListener('message', onMessage);
 }
 
-function stop() {
+function stopEventData() {
 	clearKeepAlive();
 	disconnect();
 	lastEventId = undefined;
 }
 
 function setupEventData() {
+	stop = stopEventData;
 	const fxstream = server$(connectServerSource);
 	start = () => {
+		scheduledStart = undefined;
 		setKeepAlive();
 		connect(fxstream.url);
 	};
 
 	createEffect(() => {
-		if (!eventSource) {
-			if (refCount() > 0) start();
-		} else {
-			if (refCount() < 1) stop();
+		const count = refCount();
+		if (count < 1) {
+			if (eventSource) {
+				stopEventData();
+			}
+
+			if (scheduledStart) {
+				clearTimeout(scheduledStart);
+				scheduledStart = undefined;
+			}
+
+			return;
+		}
+
+		if (count > 0) {
+			if (eventSource || scheduledStart) {
+				return;
+			}
+
+			start();
+			return;
 		}
 	});
 }

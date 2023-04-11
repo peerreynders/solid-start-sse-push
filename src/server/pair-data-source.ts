@@ -6,7 +6,7 @@ import {
 	type PriceJson,
 } from '~/lib/foreign-exchange';
 
-import { InitArgument } from './solid-start-sse-support';
+import { SourceController } from './solid-start-sse-support';
 
 function makeFxDataMessage(
 	symbol: string,
@@ -21,6 +21,8 @@ function makeFxDataMessage(
 	};
 	return message;
 }
+
+const epochMs = Date.now;
 
 // --- BEGIN Generate values
 
@@ -138,7 +140,7 @@ function copyHistory({ next, prices }: PriceCache, after: number) {
 	) {
 		if (prices[i].timestamp <= after) break;
 
-		history.push(prices[i]);
+		history[k] = prices[i];
 	}
 
 	return history;
@@ -162,23 +164,13 @@ function makePriceBurst(now: number, after: number) {
 // --- END Price Cache History
 // --- BEGIN Subscriptions
 
-const subscribers = new Set<InitArgument['send']>();
+const subscribers = new Set<SourceController>();
 let lastSend = 0;
 
 function sendEvent(now: number, data: string, id?: string) {
-	for (const send of subscribers) send(data, id);
+	for (const controller of subscribers) controller.send(data, id);
 
 	lastSend = now;
-}
-
-function sendKeepAlive() {
-	const now = Date.now();
-
-	const json = JSON.stringify({
-		kind: 'keep-alive',
-		timestamp: now,
-	});
-	sendEvent(now, json);
 }
 
 function sendFxData(now: number, message: FxDataMessage) {
@@ -189,11 +181,30 @@ function sendFxData(now: number, message: FxDataMessage) {
 	sendEvent(now, json, id);
 }
 
+function sendKeepAlive() {
+	const now = epochMs();
+
+	const json = JSON.stringify({
+		kind: 'keep-alive',
+		timestamp: now,
+	});
+	sendEvent(now, json);
+}
+
+const toJsonShutdown = (timestamp: number, until: number) =>
+	JSON.stringify({
+		kind: 'shutdown',
+		timestamp,
+		until,
+	});
+
+// --- keep alive (subscriptions)
+
 const KEEP_ALIVE_MS = 15000; // 15 seconds
 let keepAliveTimeout: ReturnType<typeof setTimeout> | undefined;
 
 function keepAlive() {
-	const now = Date.now();
+	const now = epochMs();
 	const silence = now - lastSend;
 	const delay =
 		silence < KEEP_ALIVE_MS ? KEEP_ALIVE_MS - silence : KEEP_ALIVE_MS;
@@ -215,68 +226,164 @@ function startKeepAlive() {
 	keepAliveTimeout = setTimeout(keepAlive, KEEP_ALIVE_MS);
 }
 
-let timeout: ReturnType<typeof setTimeout> | undefined;
+// --- start/stop (subscriptions)
 
-function start() {
+let pairTimeout: ReturnType<typeof setTimeout> | undefined;
+
+const startPairData = (() => {
 	const nextDelay = makeRangeValue(250, 500); // 250-500 ms
 	const nextConfigIndex = makeRangeValue(0, CONFIG.length - 1);
 	const nextIntNoise = makeRangeValue(-1000, 1000);
 	const nextNoise = () => nextIntNoise() / 1000;
-	let nextSendTime = Date.now();
+	let nextSendTime = epochMs();
 
 	const sendData = () => {
-		const now = Date.now();
+		const now = epochMs();
 		const index = nextConfigIndex();
-		const data = generateFxData(CONFIG[index], Date.now(), nextNoise());
+		const data = generateFxData(CONFIG[index], epochMs(), nextNoise());
 		sendFxData(now, data);
 
 		const delay = nextDelay();
-		timeout = setTimeout(sendData, delay - (now - nextSendTime));
+		pairTimeout = setTimeout(sendData, delay - (now - nextSendTime));
 
 		nextSendTime = now + delay;
 	};
 
-	sendData();
-	startKeepAlive();
+	return sendData;
+})();
+
+function stopPairData() {
+	if (!pairTimeout) return;
+
+	clearTimeout(pairTimeout);
+	pairTimeout = undefined;
 }
 
-function stop() {
-	stopKeepAlive();
-	if (!timeout) return;
+const PHASE_REST = 0;
+const PHASE_ACCEPT = 1;
+const PHASE_DATA = 2;
+const cycles = [25_000, 5_000, 120_000];
+let sourcePhase = PHASE_REST;
+let restUntil = 0; // TimeValue
 
-	clearTimeout(timeout);
-	timeout = undefined;
-}
+const noOp = () => void 0;
+const msSinceStart = () => Math.trunc(performance.now());
 
-function subscribe({ send, lastEventId }: InitArgument) {
-	if (!timeout) start();
-
-	const id = Number(lastEventId);
+function accept(controller: SourceController) {
+	const id = Number(controller.lastEventId);
 	const lastTime = Number.isNaN(id) || !isTimeValue(id) ? 0 : id;
 
 	// 0. waiting -> 1. subscribed -> 2. unsubscribed
 	let status = 0;
-	queueMicrotask(() => {
+	const finalize = () => {
 		if (status > 0) return;
 
-		const now = Date.now();
+		const now = epochMs();
 		const burst = makePriceBurst(now, lastTime);
 		const id = now.toString();
-		for (const info of burst) send(info, id);
+		for (const info of burst) controller.send(info, id);
 
-		subscribers.add(send);
+		subscribers.add(controller);
 		status = 1;
-	});
+	};
 
 	const unsubscribe = () => {
 		const previous = status;
 		status = 2;
-		return previous < 1 ? true : subscribers.delete(send);
+		return previous < 1 ? true : subscribers.delete(controller);
 	};
 
+	return [finalize, unsubscribe];
+}
+
+function bounce(controller: SourceController) {
+	controller.send(toJsonShutdown(epochMs(), restUntil));
+
+	return [controller.close, noOp];
+}
+
+function subscribe(controller: SourceController) {
+	const [finalize, unsubscribe] = (
+		sourcePhase === PHASE_REST ? bounce : accept
+	)(controller);
+	queueMicrotask(finalize);
 	return unsubscribe;
+}
+
+function unsubscribeAll(now: number, until: number) {
+	const controllers = Array.from(subscribers);
+	subscribers.clear();
+
+	for (const controller of controllers)
+		controller.send(toJsonShutdown(now, until));
+
+	queueMicrotask(() => {
+		for (const controller of controllers) controller.close();
+	});
+}
+
+// --- source phase (subscriptions)
+
+let phaseTimeout: ReturnType<typeof setTimeout> | undefined;
+
+function startSource() {
+	if (phaseTimeout) return;
+
+	const afterAccept = cycles[PHASE_ACCEPT];
+	const afterData = afterAccept + cycles[PHASE_DATA];
+	const fullCycle = afterData + cycles[PHASE_REST];
+
+	const cyclesStart = msSinceStart();
+
+	const nextPhase = () => {
+		let expected = 0;
+
+		switch (sourcePhase) {
+			case PHASE_ACCEPT:
+				// Starting Data phase
+				sourcePhase = PHASE_DATA;
+				expected = afterAccept;
+				startPairData();
+				break;
+
+			case PHASE_DATA:
+				// Starting Rest phase
+				sourcePhase = PHASE_REST;
+				expected = afterData;
+				stopPairData();
+				stopKeepAlive();
+				break;
+
+			case PHASE_REST:
+				// Starting Accept phase
+				sourcePhase = PHASE_ACCEPT;
+				startKeepAlive();
+				break;
+		}
+
+		const now = msSinceStart();
+		const actual = (now - cyclesStart) % fullCycle;
+		const delta = actual - expected;
+		const drift = actual > expected && actual ? actual - expected : 0;
+		const delay = cycles[sourcePhase];
+
+		console.log(
+			`Phase: ${
+				sourcePhase === 0 ? 'Rest' : sourcePhase === 1 ? 'Accept' : 'Data'
+			} delay ${delay} actual ${actual} delta ${delta} drift: ${drift}`
+		);
+
+		if (sourcePhase === PHASE_REST) {
+			const epochNow = epochMs();
+			restUntil = epochNow + delay + cycles[PHASE_ACCEPT];
+			setTimeout(unsubscribeAll, 0, epochNow, restUntil);
+		}
+		phaseTimeout = setTimeout(nextPhase, delay - drift);
+	};
+
+	nextPhase();
 }
 
 // --- END Subscriptions
 
-export { start, stop, subscribe };
+export { startSource, subscribe };

@@ -9,15 +9,19 @@ import { redirect } from 'solid-start/server';
 import { getUser, logout } from './server/session';
 import { homeHref, loginHref, logoutHref } from './route-path';
 
+// data-generate
+import { startSource } from '~/server/pair-data-source';
 // solid-start-sse-support
 import { listen } from '~/server/solid-start-sse-support';
 // in-memory-user
 import { start as startRepo } from '~/server/repo';
 
-// solid-start-sse-support
-listen();
+// data-generate
+startSource();
 // in-memory-user
 startRepo();
+// solid-start-sse-support
+listen();
 
 const protectedPaths = new Set([homeHref]);
 
