@@ -68,6 +68,8 @@ function notifySubscribers(id: string, info: Info) {
 }
 
 const SSE_CORRELATE = 'x-solid-start-sse-support';
+const SSE_FALLBACK = 'x-solid-start-sse-long-poll';
+const SSE_FALLBACK_SEARCH_PAIR = 'sseLongPoll=1';
 const SSE_LAST_EVENT_ID = 'Last-Event-ID';
 const channel = process.env.NODE_ENV?.startsWith('dev')
 	? new BroadcastChannel('solid-start-sse-support')
@@ -77,6 +79,7 @@ type EventInfo = {
 	id: string;
 	info: Info;
 };
+
 let receive: (event: MessageEvent<EventInfo>) => void | undefined;
 let listening = false;
 
@@ -97,7 +100,8 @@ function subscribe(request: Request, notify: Notify) {
 			'Call `listen()` at application start up to avoid missing events'
 		);
 
-	const id = request.headers.get(SSE_CORRELATE);
+	const id =
+		request.headers.get(SSE_CORRELATE) || request.headers.get(SSE_FALLBACK);
 	if (!id) return;
 	if (closedIds.has(id)) return;
 
@@ -107,17 +111,11 @@ function subscribe(request: Request, notify: Notify) {
 export type SourceController = {
 	send: (data: string, id?: string) => void;
 	close: () => void;
-	lastEventId: string | undefined;
 };
 
 export type InitSource = (controller: SourceController) => () => void;
 
 function eventStream(request: Request, init: InitSource) {
-	const lastEventId =
-		request.headers.get(SSE_LAST_EVENT_ID) ??
-		new URL(request.url).searchParams.get('lastEventId') ??
-		undefined;
-
 	const stream = new ReadableStream({
 		start(controller) {
 			const encoder = new TextEncoder();
@@ -129,7 +127,7 @@ function eventStream(request: Request, init: InitSource) {
 			let cleanup: (() => void) | undefined;
 			let unsubscribe: (() => boolean) | undefined = undefined;
 
-			const close = () => {
+			const closeConnection = () => {
 				if (!cleanup) return;
 				cleanup();
 				cleanup = undefined;
@@ -137,16 +135,16 @@ function eventStream(request: Request, init: InitSource) {
 				controller.close();
 			};
 
-			cleanup = init({ send, close, lastEventId });
+			cleanup = init({ send, close: closeConnection });
 			unsubscribe = subscribe(request, (info) => {
 				if (info.source === 'request' && info.name === 'close') {
-					close();
+					closeConnection();
 					return;
 				}
 			});
 
 			if (!unsubscribe) {
-				close();
+				closeConnection();
 				return;
 			}
 		},
@@ -154,6 +152,60 @@ function eventStream(request: Request, init: InitSource) {
 
 	return new Response(stream, {
 		headers: { 'Content-Type': 'text/event-stream' },
+	});
+}
+
+export type SampleController = {
+	close: (data: string) => void;
+	cancel: () => void;
+};
+
+export type InitSample = (controller: SampleController) => () => void;
+
+function eventSample(request: Request, init: InitSample) {
+	return new Promise<Response>((resolve) => {
+		let cleanup: (() => void) | undefined;
+		let unsubscribe: (() => boolean) | undefined = undefined;
+
+		const closeConnection = (response?: Response) => {
+			if (!cleanup) return;
+
+			cleanup();
+			cleanup = undefined;
+			unsubscribe?.();
+
+			resolve(
+				response
+					? response
+					: new Response(null, {
+							status: 499,
+							statusText: 'Client Close Request',
+					  })
+			);
+		};
+
+		const close = (json: string) =>
+			closeConnection(
+				new Response(json, {
+					headers: {
+						'Content-Type': 'application/json',
+					},
+				})
+			);
+
+		cleanup = init({ close, cancel: () => closeConnection() });
+
+		unsubscribe = subscribe(request, (info) => {
+			if (info.source === 'request' && info.name === 'close') {
+				closeConnection();
+				return;
+			}
+		});
+
+		if (!unsubscribe) {
+			closeConnection();
+			return;
+		}
 	});
 }
 
@@ -178,18 +230,22 @@ function solidStartSseSupport(
 	_response: http.ServerResponse,
 	next: NextFunction
 ) {
+	if (request.method !== 'GET') return next();
+
 	const accept = request.headers.accept;
-	if (
-		request.method !== 'GET' ||
-		!accept ||
-		0 > accept.indexOf('text/event-stream')
-	)
-		return next();
+	const href = request.url;
+	const name =
+		accept && 0 <= accept.indexOf('text/event-stream')
+			? SSE_CORRELATE
+			: href && 0 <= href.indexOf(SSE_FALLBACK_SEARCH_PAIR)
+			? SSE_FALLBACK
+			: undefined;
+	if (!name) return next();
 
 	// tag request with a unique header
 	// which will get copied
 	const id = nanoid();
-	request.headers[SSE_CORRELATE] = id;
+	request.headers[name] = id;
 
 	// send event when request closes
 	const close = () => {
@@ -213,4 +269,27 @@ if (globalThis.__no_tree_shaking) {
 	globalThis.__no_tree_shaking = { solidStartSseSupport };
 }
 
-export { eventStream, listen, solidStartSseSupport };
+function requestInfo(request: Request) {
+	const lastEventId =
+		request.headers.get(SSE_LAST_EVENT_ID) ??
+		new URL(request.url).searchParams.get('lastEventId') ??
+		undefined;
+
+	return {
+		streamed: request.headers.has(SSE_CORRELATE)
+			? true
+			: request.headers.has(SSE_FALLBACK)
+			? false
+			: undefined,
+		lastEventId,
+	};
+}
+
+export {
+	SSE_FALLBACK_SEARCH_PAIR,
+	eventSample,
+	eventStream,
+	listen,
+	requestInfo,
+	solidStartSseSupport,
+};

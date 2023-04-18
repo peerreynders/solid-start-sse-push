@@ -91,6 +91,22 @@ function isShutdown(
 	return isTimeValue(message.timestamp) && isTimeValue(message.until);
 }
 
+function isFxMessage(message: unknown): message is FxMessage {
+	if (typeof message !== 'object' || message === null) return false;
+
+	return (
+		isFxData(message as Record<string, unknown>) ||
+		isKeepAlive(message as Record<string, unknown>) ||
+		isShutdown(message as Record<string, unknown>)
+	);
+}
+
+function isFxMessageArray(messages: unknown): messages is FxMessage[] {
+	if (!Array.isArray(messages)) return false;
+
+	return messages.every(isFxMessage);
+}
+
 const fromPriceJson = ({ timestamp, bid, ask }: PriceJson) => ({
 	timestamp: new Date(timestamp),
 	bid,
@@ -98,16 +114,8 @@ const fromPriceJson = ({ timestamp, bid, ask }: PriceJson) => ({
 });
 
 function fromJson(raw: string) {
-	const message = JSON.parse(raw) as Record<string, unknown>;
-	if (typeof message !== 'object' || message === null) return undefined;
-
-	if (isFxData(message)) return message;
-
-	if (isKeepAlive(message)) return message;
-
-	if (isShutdown(message)) return message;
-
-	return undefined;
+	const message = JSON.parse(raw);
+	return isFxMessage(message) ? message : undefined;
 }
 
 const timeFormat = new Intl.DateTimeFormat(undefined, {
@@ -116,4 +124,11 @@ const timeFormat = new Intl.DateTimeFormat(undefined, {
 });
 const formatTimestamp = timeFormat.format;
 
-export { formatTimestamp, fromJson, fromPriceJson, SYMBOLS };
+export {
+	formatTimestamp,
+	fromJson,
+	fromPriceJson,
+	isFxMessage,
+	isFxMessageArray,
+	SYMBOLS,
+};

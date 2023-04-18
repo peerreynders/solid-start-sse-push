@@ -2,11 +2,13 @@ import { isTimeValue } from '~/lib/helpers';
 import { makeRangeValue } from '~/lib/random';
 import {
 	SYMBOLS,
+	type FxMessage,
 	type FxDataMessage,
+	type ShutdownMessage,
 	type PriceJson,
 } from '~/lib/foreign-exchange';
 
-import { SourceController } from './solid-start-sse-support';
+import { SampleController, SourceController } from './solid-start-sse-support';
 
 function makeFxDataMessage(
 	symbol: string,
@@ -22,7 +24,19 @@ function makeFxDataMessage(
 	return message;
 }
 
-const epochMs = Date.now;
+function makeShutdownMessage(timestamp: number, until: number) {
+	const message: ShutdownMessage = {
+		kind: 'shutdown',
+		timestamp,
+		until,
+	};
+
+	return message;
+}
+
+const noOp = () => void 0;
+const msSinceStart = () => Math.trunc(performance.now());
+const epochTimestamp = Date.now;
 
 // --- BEGIN Generate values
 
@@ -146,8 +160,8 @@ function copyHistory({ next, prices }: PriceCache, after: number) {
 	return history;
 }
 
-function makePriceBurst(now: number, after: number) {
-	const result: string[] = [];
+function makePriceBurst(timestamp: number, after: number) {
+	const result: FxDataMessage[] = [];
 
 	for (const cache of priceCache.values()) {
 		if (cache.prices.length < 1) continue;
@@ -155,48 +169,142 @@ function makePriceBurst(now: number, after: number) {
 		const history = copyHistory(cache, after);
 		if (history.length < 1) continue;
 
-		result.push(JSON.stringify(makeFxDataMessage(cache.symbol, now, history)));
+		result.push(makeFxDataMessage(cache.symbol, timestamp, history));
 	}
 
 	return result;
 }
 
 // --- END Price Cache History
-// --- BEGIN Subscriptions
 
+// --- BEGIN Sample events
+type SampleEvents = {
+	controller: SampleController;
+	lastEventId: number;
+	events: number;
+	respondBy: number;
+};
+
+// Dispatch when either is reached
+const MAX_SAMPLE_MS = 5000; // 5 seconds
+const MAX_SAMPLE_NEW_EVENTS = 8; // events since registration
+
+// Waiting for…
+const sampleEvents = new Set<SampleEvents>();
+const ready: SampleEvents[] = [];
+let nextSample = 0;
+let sampleTimeout: ReturnType<typeof setTimeout> | undefined;
+
+function stopSamples() {
+	if (!sampleTimeout) return;
+
+	clearTimeout(sampleTimeout);
+	sampleTimeout = undefined;
+	nextSample = 0;
+}
+
+function scheduleNextSample() {
+	if (sampleEvents.size < 1) return stopSamples();
+
+	const head = sampleEvents.values().next().value as SampleEvents;
+	if (nextSample === head.respondBy) return;
+
+	if (sampleTimeout) clearTimeout(sampleTimeout);
+
+	nextSample = head.respondBy;
+	sampleTimeout = setTimeout(releaseSamples, nextSample - msSinceStart());
+}
+
+function sendReady(timestamp: number, lastMessage?: FxMessage) {
+	if (ready.length < 1) return;
+
+	for (const item of ready) {
+		const messages: FxMessage[] = makePriceBurst(timestamp, item.lastEventId);
+		if (lastMessage) messages.push(lastMessage);
+		item.controller.close(JSON.stringify(messages));
+	}
+
+	ready.length = 0;
+}
+
+function releaseSamples() {
+	sampleTimeout = undefined;
+	nextSample = 0;
+
+	const now = msSinceStart();
+	for (const item of sampleEvents) {
+		if (item.respondBy > now) break;
+
+		ready.push(item);
+		sampleEvents.delete(item);
+	}
+
+	sendReady(epochTimestamp());
+	scheduleNextSample();
+}
+
+function markSampleEvents(timestamp: number) {
+	for (const item of sampleEvents) {
+		item.events += 1;
+		if (item.events < MAX_SAMPLE_NEW_EVENTS) continue;
+
+		ready.push(item);
+		sampleEvents.delete(item);
+	}
+
+	sendReady(timestamp);
+	scheduleNextSample();
+}
+
+function shutdownSamples(timestamp: number, message: ShutdownMessage) {
+	for (const item of sampleEvents) ready.push(item);
+
+	sampleEvents.clear();
+	sendReady(timestamp, message);
+}
+// --- END Sample events
+
+// --- BEGIN Subscriptions
 const subscribers = new Set<SourceController>();
 let lastSend = 0;
 
-function sendEvent(now: number, data: string, id?: string) {
+function sendEvent(timestamp: number, data: string, id?: string) {
 	for (const controller of subscribers) controller.send(data, id);
 
-	lastSend = now;
-}
-
-function sendFxData(now: number, message: FxDataMessage) {
-	cachePrice(message);
-	const id = now.toString();
-	const json = JSON.stringify(message);
-
-	sendEvent(now, json, id);
+	lastSend = timestamp;
 }
 
 function sendKeepAlive() {
-	const now = epochMs();
+	const timestamp = epochTimestamp();
 
 	const json = JSON.stringify({
 		kind: 'keep-alive',
-		timestamp: now,
+		timestamp,
 	});
-	sendEvent(now, json);
+	sendEvent(timestamp, json);
 }
 
-const toJsonShutdown = (timestamp: number, until: number) =>
-	JSON.stringify({
-		kind: 'shutdown',
-		timestamp,
-		until,
+function sendFxData(timestamp: number, message: FxDataMessage) {
+	cachePrice(message);
+	const id = timestamp.toString();
+	const json = JSON.stringify(message);
+
+	sendEvent(timestamp, json, id);
+
+	markSampleEvents(timestamp);
+}
+
+function shutdownSubscribers(message: ShutdownMessage) {
+	const json = JSON.stringify(message);
+	const controllers = Array.from(subscribers);
+	subscribers.clear();
+
+	for (const controller of controllers) controller.send(json);
+
+	queueMicrotask(() => {
+		for (const controller of controllers) controller.close();
 	});
+}
 
 // --- keep alive (subscriptions)
 
@@ -204,8 +312,7 @@ const KEEP_ALIVE_MS = 15000; // 15 seconds
 let keepAliveTimeout: ReturnType<typeof setTimeout> | undefined;
 
 function keepAlive() {
-	const now = epochMs();
-	const silence = now - lastSend;
+	const silence = epochTimestamp() - lastSend;
 	const delay =
 		silence < KEEP_ALIVE_MS ? KEEP_ALIVE_MS - silence : KEEP_ALIVE_MS;
 	keepAliveTimeout = setTimeout(keepAlive, delay);
@@ -230,26 +337,38 @@ function startKeepAlive() {
 
 let pairTimeout: ReturnType<typeof setTimeout> | undefined;
 
-const startPairData = (() => {
+const [startData, stopData] = (() => {
 	const nextDelay = makeRangeValue(250, 500); // 250-500 ms
 	const nextConfigIndex = makeRangeValue(0, CONFIG.length - 1);
 	const nextIntNoise = makeRangeValue(-1000, 1000);
 	const nextNoise = () => nextIntNoise() / 1000;
-	let nextSendTime = epochMs();
+	let nextSendTime = 0;
 
-	const sendData = () => {
-		const now = epochMs();
+	function sendData() {
+		const timestamp = epochTimestamp();
+
 		const index = nextConfigIndex();
-		const data = generateFxData(CONFIG[index], epochMs(), nextNoise());
-		sendFxData(now, data);
+		const data = generateFxData(CONFIG[index], timestamp, nextNoise());
+		sendFxData(timestamp, data);
 
-		const delay = nextDelay();
-		pairTimeout = setTimeout(sendData, delay - (now - nextSendTime));
+		nextSendTime += nextDelay();
+		pairTimeout = setTimeout(sendData, nextSendTime - timestamp);
+	}
 
-		nextSendTime = now + delay;
-	};
+	function stop() {
+		if (pairTimeout) {
+			clearTimeout(pairTimeout);
+			pairTimeout = undefined;
+		}
+		nextSendTime = 0;
+	}
 
-	return sendData;
+	function start() {
+		nextSendTime = epochTimestamp();
+		sendData();
+	}
+
+	return [start, stop];
 })();
 
 function stopPairData() {
@@ -262,15 +381,14 @@ function stopPairData() {
 const PHASE_REST = 0;
 const PHASE_ACCEPT = 1;
 const PHASE_DATA = 2;
-const cycles = [25_000, 5_000, 120_000];
+const cycle = [25_000, 5_000, 120_000];
 let sourcePhase = PHASE_REST;
 let restUntil = 0; // TimeValue
 
-const noOp = () => void 0;
-const msSinceStart = () => Math.trunc(performance.now());
+// --- Event subscriptions
 
-function accept(controller: SourceController) {
-	const id = Number(controller.lastEventId);
+function accept(controller: SourceController, lastEventId?: string) {
+	const id = Number(lastEventId);
 	const lastTime = Number.isNaN(id) || !isTimeValue(id) ? 0 : id;
 
 	// 0. waiting -> 1. subscribed -> 2. unsubscribed
@@ -278,10 +396,12 @@ function accept(controller: SourceController) {
 	const finalize = () => {
 		if (status > 0) return;
 
-		const now = epochMs();
-		const burst = makePriceBurst(now, lastTime);
-		const id = now.toString();
-		for (const info of burst) controller.send(info, id);
+		const timestamp = epochTimestamp();
+		const burst = makePriceBurst(timestamp, lastTime);
+		const id = timestamp.toString();
+		for (const info of burst) {
+			controller.send(JSON.stringify(info), id);
+		}
 
 		subscribers.add(controller);
 		status = 1;
@@ -297,29 +417,63 @@ function accept(controller: SourceController) {
 }
 
 function bounce(controller: SourceController) {
-	controller.send(toJsonShutdown(epochMs(), restUntil));
-
+	controller.send(
+		JSON.stringify(makeShutdownMessage(epochTimestamp(), restUntil))
+	);
 	return [controller.close, noOp];
 }
 
-function subscribe(controller: SourceController) {
-	const [finalize, unsubscribe] = (
-		sourcePhase === PHASE_REST ? bounce : accept
-	)(controller);
+function subscribe(controller: SourceController, lastEventId?: string) {
+	const [finalize, unsubscribe] =
+		sourcePhase === PHASE_REST
+			? bounce(controller)
+			: accept(controller, lastEventId);
+
 	queueMicrotask(finalize);
 	return unsubscribe;
 }
 
-function unsubscribeAll(now: number, until: number) {
-	const controllers = Array.from(subscribers);
-	subscribers.clear();
+// --- Long poll samples
+function acceptSample(controller: SampleController, lastEventId?: string) {
+	const id = Number(lastEventId);
+	const lastId = Number.isNaN(id) || !isTimeValue(id) ? 0 : id;
 
-	for (const controller of controllers)
-		controller.send(toJsonShutdown(now, until));
+	const item = {
+		controller,
+		lastEventId: lastId,
+		events: 0,
+		respondBy: msSinceStart() + MAX_SAMPLE_MS,
+	};
 
-	queueMicrotask(() => {
-		for (const controller of controllers) controller.close();
-	});
+	const unregister = () => {
+		sampleEvents.delete(item);
+		scheduleNextSample();
+	};
+
+	sampleEvents.add(item);
+	scheduleNextSample();
+
+	return unregister;
+}
+
+function bounceSample(controller: SampleController) {
+	controller.close(
+		JSON.stringify([makeShutdownMessage(epochTimestamp(), restUntil)])
+	);
+
+	return noOp;
+}
+
+const sample = (controller: SampleController, lastEventId?: string) =>
+	sourcePhase === PHASE_REST
+		? bounceSample(controller)
+		: acceptSample(controller, lastEventId);
+// ---
+function shutdownConnections(timestamp: number, until: number) {
+	const message = makeShutdownMessage(timestamp, until);
+
+	shutdownSubscribers(message);
+	shutdownSamples(timestamp, message);
 }
 
 // --- source phase (subscriptions)
@@ -329,9 +483,9 @@ let phaseTimeout: ReturnType<typeof setTimeout> | undefined;
 function startSource() {
 	if (phaseTimeout) return;
 
-	const afterAccept = cycles[PHASE_ACCEPT];
-	const afterData = afterAccept + cycles[PHASE_DATA];
-	const fullCycle = afterData + cycles[PHASE_REST];
+	const afterAccept = cycle[PHASE_ACCEPT];
+	const afterData = afterAccept + cycle[PHASE_DATA];
+	const fullCycle = afterData + cycle[PHASE_REST];
 
 	const cyclesStart = msSinceStart();
 
@@ -343,7 +497,7 @@ function startSource() {
 				// Starting Data phase
 				sourcePhase = PHASE_DATA;
 				expected = afterAccept;
-				startPairData();
+				startData();
 				break;
 
 			case PHASE_DATA:
@@ -365,7 +519,7 @@ function startSource() {
 		const actual = (now - cyclesStart) % fullCycle;
 		const delta = actual - expected;
 		const drift = actual > expected && actual ? actual - expected : 0;
-		const delay = cycles[sourcePhase];
+		const delay = cycle[sourcePhase];
 
 		console.log(
 			`Phase: ${
@@ -374,9 +528,10 @@ function startSource() {
 		);
 
 		if (sourcePhase === PHASE_REST) {
-			const epochNow = epochMs();
-			restUntil = epochNow + delay + cycles[PHASE_ACCEPT];
-			setTimeout(unsubscribeAll, 0, epochNow, restUntil);
+			stopData();
+			const timestamp = epochTimestamp();
+			restUntil = timestamp + delay + cycle[PHASE_ACCEPT];
+			setTimeout(shutdownConnections, 0, timestamp, restUntil);
 		}
 		phaseTimeout = setTimeout(nextPhase, delay - drift);
 	};
@@ -386,4 +541,4 @@ function startSource() {
 
 // --- END Subscriptions
 
-export { startSource, subscribe };
+export { sample, startSource, subscribe };
