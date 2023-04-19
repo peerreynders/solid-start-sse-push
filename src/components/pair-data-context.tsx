@@ -11,6 +11,7 @@ import server$, {
 	ServerError,
 	type ServerFunctionEvent,
 } from 'solid-start/server';
+
 import {
 	SYMBOLS,
 	fromJson,
@@ -25,6 +26,9 @@ import {
 import { makeRangeValue } from '~/lib/random';
 
 // --- START server side ---
+
+import { userFromFetchEvent } from '~/server/helpers';
+import { getUserPairs } from '~/server/session';
 
 import {
 	SSE_FALLBACK_SEARCH_PAIR,
@@ -41,13 +45,25 @@ import {
 } from '~/server/pair-data-source';
 
 async function connectServerSource(this: ServerFunctionEvent) {
-	const info = requestInfo(this.request);
+	const user = userFromFetchEvent(this);
+	if (!user) throw new ServerError('Unauthorized', { status: 401 });
 
+	const userPairs = await getUserPairs(this.request);
+	if (!userPairs || userPairs.length < 1)
+		throw new ServerError('Forbidden', { status: 403 });
+
+	const info = requestInfo(this.request);
+	const args = {
+		lastEventId: info.lastEventId,
+		pairs: userPairs,
+	};
+
+	// Use `info.streamed === undefined` to force error to switch to fallback
 	if (info.streamed) {
 		let unsubscribe: (() => void) | undefined = undefined;
 
 		const init: InitSource = (controller) => {
-			unsubscribe = subscribeToSource(controller, info.lastEventId);
+			unsubscribe = subscribeToSource(controller, args);
 
 			return () => {
 				if (unsubscribe) {
@@ -65,7 +81,7 @@ async function connectServerSource(this: ServerFunctionEvent) {
 		let close: (() => void) | undefined = undefined;
 
 		const init: InitSample = (controller) => {
-			close = sampleEvents(controller, info.lastEventId);
+			close = sampleEvents(controller, args);
 
 			return () => {
 				if (close) {
@@ -194,7 +210,8 @@ function setKeepAlive() {
 const BIND_IDLE = 0;
 const BIND_WAITING = 1;
 const BIND_MESSAGE = 2;
-const BIND_LONG_POLL = -1;
+const BIND_LONG_POLL = 3;
+const BIND_FAILED = -1;
 let sourceBind = BIND_IDLE;
 
 let lastEventId: string | undefined;
@@ -279,6 +296,7 @@ function disconnectEventSource() {
 }
 
 function onError(_event: Event) {
+	// No way to identify the reason here so try long polling next
 	if (
 		eventSource?.readyState === READY_STATE_CLOSED &&
 		sourceBind !== BIND_MESSAGE
@@ -319,10 +337,19 @@ function disconnectLongPoll() {
 	}
 }
 
-async function fetchSample(path: string, repoll: () => void) {
+function sampleFailed() {
+	sourceBind = BIND_FAILED;
+	disconnectLongPoll();
+}
+
+async function fetchSample(
+	path: string,
+	scheduleNext: (waitMs: number) => void
+) {
 	sampleTimeout = undefined;
 	console.assert(abort === undefined, 'sample abort unexpectedly set');
 
+	let waitMs = -1;
 	try {
 		const href = toHref(path, lastEventId, false);
 		abort = new AbortController();
@@ -331,27 +358,31 @@ async function fetchSample(path: string, repoll: () => void) {
 		const response = await fetch(href, { signal: abort.signal });
 		clearKeepAlive();
 
-		if (!response.ok) throw new Error('fetch unsuccessful');
+		if (response.ok) {
+			const messages = await response.json();
 
-		const messages = await response.json();
-
-		if (isFxMessageArray(messages)) multiUpdate(messages);
+			if (isFxMessageArray(messages)) multiUpdate(messages);
+			waitMs = LONG_POLL_WAIT;
+		} else {
+			sampleFailed();
+		}
 	} catch (error) {
-		console.error('sampleEvents', error);
+		console.error('fetchSample', error);
+		sampleFailed();
 	} finally {
-		repoll();
+		if (waitMs >= 0) scheduleNext(waitMs);
 	}
 }
 
 function connectLongPoll(path: string) {
-	const repoll = () => {
+	const repoll = (waitMs: number) => {
 		const lastAbort = abort;
 		abort = undefined;
 
 		sampleTimeout =
 			typeof lastAbort === 'undefined'
 				? undefined
-				: setTimeout(fetchSample, LONG_POLL_WAIT, path, repoll);
+				: setTimeout(fetchSample, waitMs, path, repoll);
 	};
 
 	setTimeout(fetchSample, LONG_POLL_WAIT, path, repoll);

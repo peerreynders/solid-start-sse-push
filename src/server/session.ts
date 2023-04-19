@@ -24,7 +24,8 @@ const storage = createCookieSessionStorage({
 const fromRequest = (request: Request): Promise<Session> =>
 	storage.getSession(request.headers.get('Cookie'));
 
-const USER_SESSION_KEY = 'userId';
+const KEY_USER_ID = 'userId';
+const KEY_USER_PAIRS = 'fxPairs';
 const USER_SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
 // Cookies are session cookies if they do not
 // specify the `Expires` or `Max-Age` attribute.
@@ -32,16 +33,19 @@ const USER_SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
 async function createUserSession({
 	request,
 	userId,
+	userPairs,
 	remember,
 	redirectTo,
 }: {
 	request: Request;
 	userId: User['id'];
+	userPairs: string[];
 	remember: boolean;
 	redirectTo: string;
 }): Promise<Response> {
 	const session = await fromRequest(request);
-	session.set(USER_SESSION_KEY, userId);
+	session.set(KEY_USER_ID, userId);
+	session.set(KEY_USER_PAIRS, userPairs);
 
 	const maxAge = remember ? USER_SESSION_MAX_AGE : undefined;
 	const cookieContent = await storage.commitSession(session, { maxAge });
@@ -65,7 +69,7 @@ async function logout(request: Request, redirectTo = loginHref()) {
 }
 
 const getUserId = async (request: Request) =>
-	(await fromRequest(request)).get(USER_SESSION_KEY);
+	(await fromRequest(request)).get(KEY_USER_ID);
 
 async function getUser(request: Request) {
 	const userId = await getUserId(request);
@@ -82,10 +86,18 @@ function requireUser(
 	throw redirect(loginHref(redirectTo));
 }
 
+async function getUserPairs(request: Request) {
+	const userPairs = (await fromRequest(request)).get(KEY_USER_PAIRS);
+	if (!(userPairs && Array.isArray(userPairs))) return undefined;
+
+	return userPairs as string[];
+}
+
 export {
 	createUserSession,
 	getUser,
 	getUserId,
+	getUserPairs,
 	logout,
 	requireUser,
 	userFromFetchEvent,

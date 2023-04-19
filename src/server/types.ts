@@ -8,27 +8,17 @@ type Password = {
 	userId: string;
 };
 
-/*‡
-type Todo = {
-	id: string;
-	title: string;
-	complete: boolean;
-	createdAt: number;
-	updatedAt: number;
+type FxPairList = {
+	fxPairs: string[];
 	userId: string;
 };
-*/
 
 type Data = {
 	users: User[];
-	//‡ todos: Todo[];
+	fxPairLists: FxPairList[];
 	passwords: Password[];
 };
 
-type SeedContent = [
-	email: string,
-	password: string
-	//‡ todos: [title: string, completed: boolean, createdAt: string][]
-][];
+type SeedContent = [email: string, password: string, fxPairs: string[]][];
 
-export type { Data, Password, SeedContent, /*‡ Todo, */ User };
+export type { Data, FxPairList, Password, SeedContent, User };

@@ -3,12 +3,12 @@ import { nanoid } from 'nanoid';
 import bcrypt from 'bcryptjs';
 import { content } from './seed';
 
-import type { Data, Password, /*‡ Todo, */ User } from './types';
+import type { Data, FxPairList, Password, User } from './types';
 
 type Index = {
 	userById: Map<string, User>;
 	userByEmail: Map<string, { user: User; password: Password }>;
-	//‡ todosByUserId: Map<string, Todo[]>;
+	fxPairListByUserId: Map<string, FxPairList>;
 };
 
 type Info = {
@@ -188,52 +188,35 @@ const makePassword = (userId: string, hash: string): Password => ({
 
 const hashPassword = (password: string) => bcrypt.hash(password, 10);
 
-/*‡ const makeTodo = (
-	userId: string,
-	title: string,
-	complete = false,
-	createdAt = Date.now()
-): Todo => ({
-	id: nanoid(),
+const makeFxPairList = (userId: string, fxPairs: string[]): FxPairList => ({
+	fxPairs,
 	userId,
-	title,
-	complete,
-	createdAt,
-	updatedAt: createdAt,
-}); */
+});
 
-async function fromSeed(): Promise<Data> {
+async function fromSeed() {
 	const init: {
 		users: User[];
-		//‡		todos: Todo[];
+		fxPairLists: FxPairList[];
 		hashes: Promise<string>[];
 	} = {
 		users: [],
-		//‡		todos: [],
+		fxPairLists: [],
 		hashes: [],
 	};
 
 	const appendRecord = (
 		records: typeof init,
-		[email, password /*‡, todoList */]: [
-			string,
-			string /*‡, [string, boolean, string][] */
-		]
+		[email, password, fxPairs]: [string, string, string[]]
 	) => {
 		const user = makeUser(email);
 		records.users.push(user);
 		records.hashes.push(hashPassword(password));
-
-		/*‡ todoList.reduce((todos, [title, complete, created]) => {
-			const createdAt = new Date(created).getTime();
-			todos.push(makeTodo(user.id, title, complete, createdAt));
-			return todos;
-		}, records.todos); */
+		records.fxPairLists.push(makeFxPairList(user.id, fxPairs));
 
 		return records;
 	};
 
-	const { users, /*‡ todos, */ hashes } = content.reduce(appendRecord, init);
+	const { users, fxPairLists, hashes } = content.reduce(appendRecord, init);
 
 	const appendPassword = (
 		passwords: Password[],
@@ -251,11 +234,13 @@ async function fromSeed(): Promise<Data> {
 		[]
 	);
 
-	return {
+	const data: Data = {
 		users,
-		//‡ todos,
+		fxPairLists,
 		passwords,
 	};
+
+	return data;
 }
 
 function indexer(data: Data): Index {
@@ -266,19 +251,15 @@ function indexer(data: Data): Index {
 		return user ? map.set(user.email, { user, password }) : map;
 	}, new Map<string, { user: User; password: Password }>());
 
-	/*‡ const todosByUserId = data.todos.reduce((map, todo) => {
-		const list = map.get(todo.userId);
-
-		if (list) list.push(todo);
-		else map.set(todo.userId, [todo]);
-
+	const fxPairListByUserId = data.fxPairLists.reduce((map, list) => {
+		map.set(list.userId, list);
 		return map;
-	}, new Map<string, Todo[]>()); */
+	}, new Map<string, FxPairList>());
 
 	return {
 		userById,
 		userByEmail,
-		//‡		todosByUserId,
+		fxPairListByUserId,
 	};
 }
 
@@ -347,4 +328,19 @@ async function verifyLogin(
 	return isMatch ? result.user : undefined;
 }
 
-export { insertUser, selectUserByEmail, selectUserById, start, verifyLogin };
+const selectFxPairsByUserIdFn = (info: Info, userId: User['id']) =>
+	info.index.fxPairListByUserId.get(userId)?.fxPairs.slice();
+
+const selectFxPairsByUserId = async (
+	userId: User['id']
+): Promise<string[] | undefined> =>
+	waitForTask((info: Info) => selectFxPairsByUserIdFn(info, userId));
+
+export {
+	insertUser,
+	selectFxPairsByUserId,
+	selectUserByEmail,
+	selectUserById,
+	start,
+	verifyLogin,
+};

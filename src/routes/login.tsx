@@ -11,7 +11,12 @@ import {
 import { FormError } from 'solid-start/data';
 
 import { createUserSession } from '~/server/session';
-import { insertUser, selectUserByEmail, verifyLogin } from '~/server/repo';
+import {
+	insertUser,
+	selectFxPairsByUserId,
+	selectUserByEmail,
+	verifyLogin,
+} from '~/server/repo';
 
 import { validateEmail } from '~/lib/helpers';
 
@@ -108,12 +113,14 @@ async function loginFn(form: FormData, event: ServerFunctionEvent) {
 
 	if (!user) throw makeError({ error: 'user-invalid', fields });
 
+	const userPairs = (await selectFxPairsByUserId(user.id)) ?? [];
 	const redirectTo = form.get('redirect-to');
 	const remember = form.get('remember');
 
 	return createUserSession({
 		request: event.request,
 		userId: user.id,
+		userPairs,
 		remember: remember === 'on',
 		redirectTo: typeof redirectTo === 'string' ? redirectTo : homeHref,
 	});

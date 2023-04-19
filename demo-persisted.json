@@ -1,14 +1,24 @@
 {
   "users": [
     {
-      "id": "5HKveRQF1em92D19JsQTX",
+      "id": "Mq-EFJxY8ZFZjXrT88SK_",
       "email": "johnsmith@outlook.com"
+    }
+  ],
+  "fxPairLists": [
+    {
+      "fxPairs": [
+        "USD-JPY",
+        "EUR-USD",
+        "AUD-GBP"
+      ],
+      "userId": "Mq-EFJxY8ZFZjXrT88SK_"
     }
   ],
   "passwords": [
     {
-      "userId": "5HKveRQF1em92D19JsQTX",
-      "hash": "$2a$10$JFRItpayyXKyEHhtksAlEeH/m5uFSBJs65MbVPllz1Ldvu9sLaAAC"
+      "userId": "Mq-EFJxY8ZFZjXrT88SK_",
+      "hash": "$2a$10$NrqP5pFU8eytdfRVQ5Cx9evDpka.x9tNvSbIiqHi5.2CFBnqMmBYa"
     }
   ]
 }

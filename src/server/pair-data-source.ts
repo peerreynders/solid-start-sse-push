@@ -10,6 +10,8 @@ import {
 
 import { SampleController, SourceController } from './solid-start-sse-support';
 
+type AllowFxPairPredicate = (symbol: string) => boolean;
+
 function makeFxDataMessage(
 	symbol: string,
 	timestamp: number,
@@ -160,16 +162,17 @@ function copyHistory({ next, prices }: PriceCache, after: number) {
 	return history;
 }
 
-function makePriceBurst(timestamp: number, after: number) {
+function makePriceBurst(allowPair: AllowFxPairPredicate, after: number) {
 	const result: FxDataMessage[] = [];
 
 	for (const cache of priceCache.values()) {
-		if (cache.prices.length < 1) continue;
+		if (cache.prices.length < 1 || !allowPair(cache.symbol)) continue;
 
 		const history = copyHistory(cache, after);
 		if (history.length < 1) continue;
 
-		result.push(makeFxDataMessage(cache.symbol, timestamp, history));
+		const mostRecent = history[0].timestamp;
+		result.push(makeFxDataMessage(cache.symbol, mostRecent, history));
 	}
 
 	return result;
@@ -179,7 +182,9 @@ function makePriceBurst(timestamp: number, after: number) {
 
 // --- BEGIN Sample events
 type SampleEvents = {
-	controller: SampleController;
+	close: SampleController['close'];
+	cancel: SampleController['cancel'];
+	allowPair: AllowFxPairPredicate;
 	lastEventId: number;
 	events: number;
 	respondBy: number;
@@ -215,13 +220,16 @@ function scheduleNextSample() {
 	sampleTimeout = setTimeout(releaseSamples, nextSample - msSinceStart());
 }
 
-function sendReady(timestamp: number, lastMessage?: FxMessage) {
+function sendReady(lastMessage?: FxMessage) {
 	if (ready.length < 1) return;
 
 	for (const item of ready) {
-		const messages: FxMessage[] = makePriceBurst(timestamp, item.lastEventId);
+		const messages: FxMessage[] = makePriceBurst(
+			item.allowPair,
+			item.lastEventId
+		);
 		if (lastMessage) messages.push(lastMessage);
-		item.controller.close(JSON.stringify(messages));
+		item.close(JSON.stringify(messages));
 	}
 
 	ready.length = 0;
@@ -239,59 +247,70 @@ function releaseSamples() {
 		sampleEvents.delete(item);
 	}
 
-	sendReady(epochTimestamp());
+	sendReady();
 	scheduleNextSample();
 }
 
-function markSampleEvents(timestamp: number) {
+function markSampleEvents(message: FxDataMessage) {
 	for (const item of sampleEvents) {
-		item.events += 1;
+		if (item.allowPair(message.symbol)) item.events += 1;
 		if (item.events < MAX_SAMPLE_NEW_EVENTS) continue;
 
 		ready.push(item);
 		sampleEvents.delete(item);
 	}
 
-	sendReady(timestamp);
+	sendReady();
 	scheduleNextSample();
 }
 
-function shutdownSamples(timestamp: number, message: ShutdownMessage) {
+function shutdownSamples(message: ShutdownMessage) {
 	for (const item of sampleEvents) ready.push(item);
 
 	sampleEvents.clear();
-	sendReady(timestamp, message);
+	sendReady(message);
 }
 // --- END Sample events
 
 // --- BEGIN Subscriptions
-const subscribers = new Set<SourceController>();
+type SourceReceiver = {
+	send: SourceController['send'];
+	close: SourceController['close'];
+	allowPair: AllowFxPairPredicate;
+};
+const subscribers = new Set<SourceReceiver>();
 let lastSend = 0;
 
-function sendEvent(timestamp: number, data: string, id?: string) {
-	for (const controller of subscribers) controller.send(data, id);
+function sendEvent(message: FxMessage) {
+	const json = JSON.stringify(message);
+	if (message.kind === 'fx-data') {
+		const id = String(message.timestamp);
+		const symbol = message.symbol;
+		for (const receiver of subscribers) {
+			if (!receiver.allowPair(symbol)) continue;
 
-	lastSend = timestamp;
+			receiver.send(json, id);
+		}
+	} else {
+		for (const receiver of subscribers) {
+			receiver.send(json);
+		}
+	}
+	lastSend = message.timestamp;
 }
 
 function sendKeepAlive() {
-	const timestamp = epochTimestamp();
-
-	const json = JSON.stringify({
+	sendEvent({
 		kind: 'keep-alive',
-		timestamp,
+		timestamp: epochTimestamp(),
 	});
-	sendEvent(timestamp, json);
 }
 
-function sendFxData(timestamp: number, message: FxDataMessage) {
+function sendFxData(message: FxDataMessage) {
 	cachePrice(message);
-	const id = timestamp.toString();
-	const json = JSON.stringify(message);
+	sendEvent(message);
 
-	sendEvent(timestamp, json, id);
-
-	markSampleEvents(timestamp);
+	markSampleEvents(message);
 }
 
 function shutdownSubscribers(message: ShutdownMessage) {
@@ -349,7 +368,7 @@ const [startData, stopData] = (() => {
 
 		const index = nextConfigIndex();
 		const data = generateFxData(CONFIG[index], timestamp, nextNoise());
-		sendFxData(timestamp, data);
+		sendFxData(data);
 
 		nextSendTime += nextDelay();
 		pairTimeout = setTimeout(sendData, nextSendTime - timestamp);
@@ -385,32 +404,53 @@ const cycle = [25_000, 5_000, 120_000];
 let sourcePhase = PHASE_REST;
 let restUntil = 0; // TimeValue
 
+export type SourceArguments = {
+	lastEventId: string | undefined;
+	pairs: string[];
+};
+
 // --- Event subscriptions
 
-function accept(controller: SourceController, lastEventId?: string) {
-	const id = Number(lastEventId);
+function accept(controller: SourceController, args: SourceArguments) {
+	const id = Number(args.lastEventId);
 	const lastTime = Number.isNaN(id) || !isTimeValue(id) ? 0 : id;
 
 	// 0. waiting -> 1. subscribed -> 2. unsubscribed
 	let status = 0;
+	let receiver: SourceReceiver | undefined;
 	const finalize = () => {
 		if (status > 0) return;
 
+		receiver = {
+			send: controller.send,
+			close: controller.close,
+			allowPair: (symbol: string) => -1 < args.pairs.indexOf(symbol),
+		};
+
 		const timestamp = epochTimestamp();
-		const burst = makePriceBurst(timestamp, lastTime);
+		const burst = makePriceBurst(receiver.allowPair, lastTime);
 		const id = timestamp.toString();
 		for (const info of burst) {
 			controller.send(JSON.stringify(info), id);
 		}
 
-		subscribers.add(controller);
+		subscribers.add(receiver);
 		status = 1;
 	};
 
 	const unsubscribe = () => {
 		const previous = status;
 		status = 2;
-		return previous < 1 ? true : subscribers.delete(controller);
+		// subscription didn't finish, but will not subscribe
+		if (previous < 1) return true;
+
+		// already unsubscribed
+		if (!receiver) return false;
+
+		// actually unsubscribe
+		subscribers.delete(receiver);
+		receiver = undefined;
+		return true;
 	};
 
 	return [finalize, unsubscribe];
@@ -423,23 +463,23 @@ function bounce(controller: SourceController) {
 	return [controller.close, noOp];
 }
 
-function subscribe(controller: SourceController, lastEventId?: string) {
+function subscribe(controller: SourceController, args: SourceArguments) {
 	const [finalize, unsubscribe] =
-		sourcePhase === PHASE_REST
-			? bounce(controller)
-			: accept(controller, lastEventId);
+		sourcePhase === PHASE_REST ? bounce(controller) : accept(controller, args);
 
 	queueMicrotask(finalize);
 	return unsubscribe;
 }
 
 // --- Long poll samples
-function acceptSample(controller: SampleController, lastEventId?: string) {
-	const id = Number(lastEventId);
+function acceptSample(controller: SampleController, args: SourceArguments) {
+	const id = Number(args.lastEventId);
 	const lastId = Number.isNaN(id) || !isTimeValue(id) ? 0 : id;
 
 	const item = {
-		controller,
+		close: controller.close,
+		cancel: controller.cancel,
+		allowPair: (symbol: string) => -1 < args.pairs.indexOf(symbol),
 		lastEventId: lastId,
 		events: 0,
 		respondBy: msSinceStart() + MAX_SAMPLE_MS,
@@ -464,16 +504,16 @@ function bounceSample(controller: SampleController) {
 	return noOp;
 }
 
-const sample = (controller: SampleController, lastEventId?: string) =>
+const sample = (controller: SampleController, args: SourceArguments) =>
 	sourcePhase === PHASE_REST
 		? bounceSample(controller)
-		: acceptSample(controller, lastEventId);
+		: acceptSample(controller, args);
 // ---
 function shutdownConnections(timestamp: number, until: number) {
 	const message = makeShutdownMessage(timestamp, until);
 
 	shutdownSubscribers(message);
-	shutdownSamples(timestamp, message);
+	shutdownSamples(message);
 }
 
 // --- source phase (subscriptions)
