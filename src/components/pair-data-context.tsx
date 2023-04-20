@@ -102,7 +102,6 @@ async function connectServerSource(this: ServerFunctionEvent) {
 
 // --- Context data store management
 export type PairStore = Store<Pair>;
-type PushPriceFn = (latest: PriceJson[]) => void;
 
 type WithLatestArguments = {
 	latest: PriceJson[];
@@ -135,7 +134,8 @@ function withLatestPrices(this: WithLatestArguments, history: Price[]) {
 	return prices;
 }
 
-function makePricesStore(symbol: string) {
+function makeStoreEntry(symbol: string) {
+	const label = SYMBOLS.get(symbol) ?? '';
 	const [pairPrices, setPairPrices] = createStore<Pair>({
 		symbol,
 		prices: [],
@@ -145,34 +145,49 @@ function makePricesStore(symbol: string) {
 		latest: [],
 		maxLength: 10,
 	};
-
 	// Prettier will remove the parenthesis resulting in:
 	//   "An instantiation expression cannot be followed by a property access."
 	// prettier-ignore
 	const fn = withLatestPrices.bind(presetArgs);
-	const tuple: [PairStore, PushPriceFn] = [
-		pairPrices,
-		(latest: PriceJson[]) => {
-			presetArgs.latest = latest;
-			setPairPrices('prices', fn);
-		},
-	];
+	const set = (latest: PriceJson[]) => {
+		presetArgs.latest = latest;
+		setPairPrices('prices', fn);
+	};
 
-	return tuple;
+	return {
+		fxPair: {
+			symbol,
+			label,
+			store: pairPrices,
+		},
+		set,
+	};
 }
 
-const [priceStores, pushFns] = (() => {
-	const stores = new Map<string, PairStore>();
-	const setters = new Map<string, PushPriceFn>();
-	for (const symbol of SYMBOLS.keys()) {
-		const [store, push] = makePricesStore(symbol);
-		stores.set(symbol, store);
-		setters.set(symbol, push);
-	}
-	return [stores, setters];
-})();
+const storeEntries = new Map<string, ReturnType<typeof makeStoreEntry>>();
 
-const PairDataContext = createContext(priceStores);
+function getStoreEntry(symbol: string) {
+	let entry = storeEntries.get(symbol);
+	if (entry) return entry;
+
+	entry = makeStoreEntry(symbol);
+	storeEntries.set(entry.fxPair.symbol, entry);
+	return entry;
+}
+
+function fxPairRecord(symbol: string) {
+	const entry = getStoreEntry(symbol);
+
+	return entry.fxPair;
+}
+
+function pushPrices(symbol: string, latest: PriceJson[]) {
+	const entry = getStoreEntry(symbol);
+
+	entry.set(latest);
+}
+
+const PairDataContext = createContext(fxPairRecord);
 
 // --- Context consumer reference count (connect/disconnect) ---
 const [refCount, setRefCount] = createSignal(0);
@@ -236,10 +251,7 @@ function update(message: FxMessage) {
 			// De-multiplex messages by pushing
 			// prices onto the matching exchange pair store
 			const { symbol, prices } = message;
-			const push = pushFns.get(symbol);
-			if (!push) return;
-
-			push(prices);
+			pushPrices(symbol, prices);
 			return;
 		}
 
@@ -444,7 +456,7 @@ function PairDataProvider(props: ParentProps) {
 	setupEventData();
 
 	return (
-		<PairDataContext.Provider value={priceStores}>
+		<PairDataContext.Provider value={fxPairRecord}>
 			{props.children}
 		</PairDataContext.Provider>
 	);

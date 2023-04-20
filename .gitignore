@@ -29,3 +29,5 @@ Thumbs.db
 # environment variables
 .env
 .env.production
+
+demo-persisted.json

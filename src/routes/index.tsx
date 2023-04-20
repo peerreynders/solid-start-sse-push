@@ -1,28 +1,53 @@
 import { For, onCleanup } from 'solid-js';
-import { Title } from 'solid-start';
+import { useRouteData, Title } from 'solid-start';
 
-import { formatTimestamp, SYMBOLS } from '~/lib/foreign-exchange';
+// import { scheduleCompare } from '~/lib/row-monitor';
+
+import { formatTimestamp } from '~/lib/foreign-exchange';
 import {
 	disposePairData,
 	usePairData,
 	type PairStore,
 } from '~/components/pair-data-context';
 
-// import { scheduleCompare } from '~/lib/row-monitor';
+// --- START server side ---
+
+import {
+	createServerData$,
+	type ServerFunctionEvent,
+} from 'solid-start/server';
+
+import { getUserPairs } from '~/server/session';
+
+function userFxPairs(this: ServerFunctionEvent) {
+	return getUserPairs(this.request);
+}
+
+// --- END server side ---
+
+export function routeData() {
+	return createServerData$(userFxPairs);
+}
 
 const latestBid = (store: PairStore) =>
 	store.prices.length > 1 ? store.prices[0].bid : '';
 
 export default function Home() {
-	const priceStores = usePairData();
+	const userPairs = useRouteData<typeof routeData>();
+	const fxPairRecord = usePairData();
+	const list: ReturnType<typeof fxPairRecord>[] = [];
+	let ready: typeof list | undefined;
 
-	const entries: { store: PairStore; symbol: string; label: string }[] = [];
-	for (const [symbol, label] of SYMBOLS) {
-		const store = priceStores.get(symbol);
-		if (!store) continue;
+	const entries = () => {
+		if (ready) return ready;
 
-		entries.push({ store, symbol, label });
-	}
+		const fxPairs = userPairs();
+		if (!fxPairs) return list;
+
+		for (const symbol of fxPairs) list.push(fxPairRecord(symbol));
+
+		return (ready = list);
+	};
 
 	onCleanup(disposePairData);
 
@@ -33,20 +58,20 @@ export default function Home() {
 				<table>
 					<thead>
 						<tr>
-							<For each={entries}>
+							<For each={entries()}>
 								{({ label }) => <th scope="col">{label}</th>}
 							</For>
 						</tr>
 					</thead>
 					<tbody>
 						<tr>
-							<For each={entries}>
+							<For each={entries()}>
 								{({ store, symbol }) => <td id={symbol}>{latestBid(store)}</td>}
 							</For>
 						</tr>
 					</tbody>
 				</table>
-				<For each={entries}>
+				<For each={entries()}>
 					{({ store, symbol, label }) => (
 						<table class="price-table">
 							<caption>{label}</caption>
