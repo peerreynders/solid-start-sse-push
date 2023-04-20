@@ -1,4 +1,4 @@
-import { For, onCleanup } from 'solid-js';
+import { createMemo, For, onCleanup } from 'solid-js';
 import { useRouteData, Title } from 'solid-start';
 
 // import { scheduleCompare } from '~/lib/row-monitor';
@@ -35,20 +35,7 @@ const latestBid = (store: PairStore) =>
 export default function Home() {
 	const userPairs = useRouteData<typeof routeData>();
 	const fxPairRecord = usePairData();
-	const list: ReturnType<typeof fxPairRecord>[] = [];
-	let ready: typeof list | undefined;
-
-	const entries = () => {
-		if (ready) return ready;
-
-		const fxPairs = userPairs();
-		if (!fxPairs) return list;
-
-		for (const symbol of fxPairs) list.push(fxPairRecord(symbol));
-
-		return (ready = list);
-	};
-
+	const entries = createMemo(() => userPairs()?.map(fxPairRecord));
 	onCleanup(disposePairData);
 
 	return (
