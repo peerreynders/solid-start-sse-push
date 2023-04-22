@@ -221,7 +221,10 @@ function setKeepAlive() {
 //  0 - No connection attempted
 //  1 - EventSource created
 //  2 - At least one message received via event source
-// -1 - Use longpoll fallback (event source had error before reaching 2)
+//  3 - Use longpoll fallback (event source had error before reaching 2)
+// -1 - Connection failed (fallback also encountered an error; perhaps 
+//      identifying the reason for the event source failure)
+//
 const BIND_IDLE = 0;
 const BIND_WAITING = 1;
 const BIND_MESSAGE = 2;
