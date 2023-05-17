@@ -41,50 +41,58 @@ export default function Home() {
 	return (
 		<>
 			<Title>FX Client: latest prices</Title>
-			<main>
-				<table>
-					<thead>
-						<tr>
-							<For each={entries()}>
-								{({ label }) => <th scope="col">{label}</th>}
-							</For>
-						</tr>
-					</thead>
-					<tbody>
-						<tr>
-							<For each={entries()}>
-								{({ store, symbol }) => <td id={symbol}>{latestBid(store)}</td>}
-							</For>
-						</tr>
-					</tbody>
-				</table>
-				<For each={entries()}>
-					{({ store, symbol, label }) => (
-						<table class="price-table">
-							<caption>{label}</caption>
-							<thead>
-								<tr>
-									<th>Timestamp</th>
-									<th>Bid</th>
-									<th>Ask</th>
-								</tr>
-							</thead>
-							<tbody id={`history--${symbol}`}>
-								<For each={store.prices}>
-									{(price) => (
-										<tr>
-											<th>{formatTimestamp(price.timestamp)}</th>
-											<td>{price.bid}</td>
-											<td>{price.ask}</td>
-										</tr>
+			<main class="prices-wrapper">
+				<div class="last-bid-table">
+					<table>
+						<thead>
+							<tr>
+								<For each={entries()}>
+									{({ label }) => <th scope="col">{label}</th>}
+								</For>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<For each={entries()}>
+									{({ store, symbol }) => (
+										<td id={symbol}>{latestBid(store)}</td>
 									)}
 								</For>
-							</tbody>
-						</table>
-					)}
-				</For>
-				<footer class="c-info">
-					<p class="c-info__line">
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				<div class="price-group">
+					<For each={entries()}>
+						{({ store, symbol, label }) => (
+							<div class="price-table">
+								<table>
+									<caption>{label}</caption>
+									<thead>
+										<tr>
+											<th>Timestamp</th>
+											<th>Bid</th>
+											<th>Ask</th>
+										</tr>
+									</thead>
+									<tbody id={`price-history__${symbol}`}>
+										<For each={store.prices}>
+											{(price) => (
+												<tr>
+													<td>{formatTimestamp(price.timestamp)}</td>
+													<td>{price.bid}</td>
+													<td>{price.ask}</td>
+												</tr>
+											)}
+										</For>
+									</tbody>
+								</table>
+							</div>
+						)}
+					</For>
+				</div>
+				<footer class="info">
+					<p>
 						Visit{' '}
 						<a href="https://start.solidjs.com" target="_blank">
 							start.solidjs.com
@@ -92,10 +100,8 @@ export default function Home() {
 						to learn how to build SolidStart apps.
 					</p>
 					<div>
-						<form method="post" action="/logout" class="c-info__logout">
-							<button type="submit" class="c-info__pointer u-flat-button">
-								Logout
-							</button>
+						<form method="post" action="/logout">
+							<button type="submit">Logout</button>
 						</form>
 					</div>
 				</footer>

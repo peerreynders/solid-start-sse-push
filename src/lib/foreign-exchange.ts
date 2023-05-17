@@ -1,4 +1,4 @@
-import { isTimeValue } from './helpers';
+import { isTimeValue } from './shame';
 
 export type PriceJson = {
 	timestamp: number; // milliseconds since ECMAScript epoch

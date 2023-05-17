@@ -1,4 +1,4 @@
-import { createEffect, Show, type Accessor } from 'solid-js';
+import { createEffect, type Accessor } from 'solid-js';
 import { Title, useSearchParams } from 'solid-start';
 
 import { homeHref } from '~/route-path';
@@ -18,7 +18,7 @@ import {
 	verifyLogin,
 } from '~/server/repo';
 
-import { validateEmail } from '~/lib/helpers';
+import { validateEmail } from '~/lib/shame';
 
 type FieldError =
 	| 'email-invalid'
@@ -147,17 +147,11 @@ function makeLoginSupport() {
 	};
 }
 
-const emailHasError = (emailError: () => string | undefined) =>
-	typeof emailError() !== undefined;
-
 const emailInvalid = (emailError: () => string | undefined) =>
 	emailError() ? true : undefined;
 
 const emailErrorId = (emailError: () => string | undefined) =>
 	emailError() ? 'email-error' : undefined;
-
-const passwordHasError = (passwordError: () => string | undefined) =>
-	typeof passwordError() !== undefined;
 
 const passwordInvalid = (passwordError: () => string | undefined) =>
 	passwordError() ? true : undefined;
@@ -187,67 +181,60 @@ export default function LoginPage() {
 	});
 
 	return (
-		<div class="c-login">
+		<div class="login">
 			<Title>FX Login</Title>
-			<h1 class="c-login__header">FX Login</h1>
-			<div>
-				<login.Form class="c-login__form">
-					<div>
-						<label for="email">Email address</label>
-						<input
-							ref={emailInput}
-							id="email"
-							class="c-login__email"
-							required
-							autofocus={hasAutofocus('email', focusId)}
-							name="email"
-							type="email"
-							autocomplete="email"
-							aria-invalid={emailInvalid(emailError)}
-							aria-errormessage={emailErrorId(emailError)}
-						/>
-						<Show when={emailHasError(emailError)}>
-							<div id="email-error">{emailError()}</div>
-						</Show>
+			<h1>FX Login</h1>
+			<login.Form>
+				<div>
+					<label for="email">Email address</label>
+					<input
+						ref={emailInput}
+						id="email"
+						required
+						autofocus={hasAutofocus('email', focusId)}
+						name="email"
+						type="email"
+						autocomplete="email"
+						aria-invalid={emailInvalid(emailError)}
+						aria-errormessage={emailErrorId(emailError)}
+					/>
+					<div class="login__message-email" id="email-error">
+						{emailError()}
 					</div>
+				</div>
 
-					<div>
-						<label for="password">Password</label>
-						<input
-							ref={passwordInput}
-							id="password"
-							class="c-login__password"
-							autofocus={hasAutofocus('password', focusId)}
-							name="password"
-							type="password"
-							autocomplete="current-password"
-							aria-invalid={passwordInvalid(passwordError)}
-							aria-errormessage={passwordErrorId(passwordError)}
-						/>
-						<Show when={passwordHasError(passwordError)}>
-							<div id="password-error">{passwordError()}</div>
-						</Show>
+				<div>
+					<label for="password">Password</label>
+					<input
+						ref={passwordInput}
+						id="password"
+						autofocus={hasAutofocus('password', focusId)}
+						name="password"
+						type="password"
+						autocomplete="current-password"
+						aria-invalid={passwordInvalid(passwordError)}
+						aria-errormessage={passwordErrorId(passwordError)}
+					/>
+					<div
+						class="login__message-password"
+						id={passwordErrorId(passwordError)}
+					>
+						{passwordError()}
 					</div>
-					<input type="hidden" name="redirect-to" value={redirectTo} />
-					<button type="submit" name="kind" value="login">
-						Log in
-					</button>
-					<button type="submit" name="kind" value="signup">
-						Sign Up
-					</button>
-					<div>
-						<label for="remember">
-							<input
-								id="remember"
-								class="c-login__remember"
-								name="remember"
-								type="checkbox"
-							/>{' '}
-							Remember me
-						</label>
-					</div>
-				</login.Form>
-			</div>
+				</div>
+				<input type="hidden" name="redirect-to" value={redirectTo} />
+				<button type="submit" name="kind" value="login">
+					Log in
+				</button>
+				<button type="submit" name="kind" value="signup">
+					Sign Up
+				</button>
+				<div>
+					<label for="remember">
+						<input id="remember" name="remember" type="checkbox" /> Remember me
+					</label>
+				</div>
+			</login.Form>
 		</div>
 	);
 }

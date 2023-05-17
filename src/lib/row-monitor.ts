@@ -43,7 +43,7 @@ function compare(prev: SnapShot, next: SnapShot) {
 }
 
 function initialize(symbol: string) {
-	const selector = '#history--' + symbol;
+	const selector = '#price-history__' + symbol;
 	const root = document.querySelector(selector);
 	if (!root || !(root instanceof HTMLTableSectionElement)) {
 		console.error(

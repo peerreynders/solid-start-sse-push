@@ -1,4 +1,4 @@
-import { isTimeValue } from '~/lib/helpers';
+import { isTimeValue } from '~/lib/shame';
 import { makeRangeValue } from '~/lib/random';
 import {
 	SYMBOLS,

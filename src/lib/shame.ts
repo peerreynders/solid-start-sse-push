@@ -1,3 +1,9 @@
+// file src/lib/shame.ts
+//
+// `shame` as in ashamed for not thinking
+// of a better name (or place) than "utils" or "helpers".
+//
+// credit: https://csswizardry.com/2013/04/shame-css/
 import { FormError, ServerError, useServerContext } from 'solid-start';
 
 // https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/email#basic_validation

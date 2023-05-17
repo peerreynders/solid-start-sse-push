@@ -9,7 +9,7 @@ import { isServer } from 'solid-js/web';
 import { useServerContext } from 'solid-start';
 import server$, { type ServerFunctionEvent } from 'solid-start/server';
 
-import { userFromFetchEvent } from '~/server/helpers';
+import { userFromFetchEvent } from '~/server/shame';
 import type { User } from '~/types';
 
 // --- START server side ---

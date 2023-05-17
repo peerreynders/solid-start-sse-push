@@ -1,3 +1,9 @@
+// file src/server/shame.ts
+//
+// `shame` as in ashamed for not thinking
+// of a better name (or place) than "utils" or "helpers".
+//
+// credit: https://csswizardry.com/2013/04/shame-css/
 import type { FetchEvent } from 'solid-start/server';
 
 import { homeHref } from '~/route-path';

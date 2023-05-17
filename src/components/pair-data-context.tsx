@@ -27,7 +27,7 @@ import { makeRangeValue } from '~/lib/random';
 
 // --- START server side ---
 
-import { userFromFetchEvent } from '~/server/helpers';
+import { userFromFetchEvent } from '~/server/shame';
 import { getUserPairs } from '~/server/session';
 
 import {
@@ -222,7 +222,7 @@ function setKeepAlive() {
 //  1 - EventSource created
 //  2 - At least one message received via event source
 //  3 - Use longpoll fallback (event source had error before reaching 2)
-// -1 - Connection failed (fallback also encountered an error; perhaps 
+// -1 - Connection failed (fallback also encountered an error; perhaps
 //      identifying the reason for the event source failure)
 //
 const BIND_IDLE = 0;

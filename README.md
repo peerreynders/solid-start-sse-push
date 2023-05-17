@@ -12,7 +12,7 @@ That approach may work over HTTP/2 and later but browser's enforce a browser-wid
 
 … i.e. one **single** `EventSource` instance should be serving the entire web application as some sort of server-client event bus. It's likely a mistake to create that `EventSource` inside an ordinary component. It more likely should be managed centrally by a provider that makes it possible for components to subscribe to relevant events.  
 
-Websockets are frequently suggested as a better alternative as they support bi-directional communication but Websockets are a protocol separate from [HTTP](https://datatracker.ietf.org/doc/html/rfc8441) which needs to be brought forward separately after each HTTP revision.
+Websockets are frequently suggested as a better alternative as they support bi-directional communication but Websockets are a protocol ([RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455)) separate from [HTTP](https://datatracker.ietf.org/doc/html/rfc8441) which needs to be brought forward separately after each HTTP revision ([RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441)).
 
 There are scenarios where server-sent events can be more effective:
 * [Using Server-Sent Events to Simplify Real-time Streaming at Scale](https://shopify.engineering/server-sent-events-data-streaming)
@@ -23,6 +23,8 @@ There are scenarios where server-sent events can be more effective:
 This demonstration application outlines the solution approach envisioned by porting various aspects of the PHP sample application *FX Client* (Foreign eXchange) of [Data Push Applications Using HTML5 SSE](https://github.com/DarrenCook/ssebook) to [SolidStart](https://start.solidjs.com/getting-started/what-is-solidstart).
 
 ## Discussion
+
+![overview](./docs/assets/overview.jpg)
 
 ### Client Page (Component)
 
@@ -79,49 +81,53 @@ So `entries` holds all the `fxPair` records the user has access to.
 `disposePairData` is simply used to decrement the reference count on the central event source ([onCleanup](https://www.solidjs.com/docs/latest/api#oncleanup)) so it can disconnect when there are no more "subscribers".
 
 ```TSX
-<table>
-  <thead>
-    <tr>
-      <For each={entries()}>
-        {({ label }) => <th scope="col">{label}</th>}
-      </For>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <For each={entries()}>
-        {({ store, symbol }) => <td id={symbol}>{latestBid(store)}</td>}
-      </For>
-    </tr>
-  </tbody>
-</table>
+<div class="last-bid-table">
+  <table>
+    <thead>
+      <tr>
+        <For each={entries()}>
+          {({ label }) => <th scope="col">{label}</th>}
+        </For>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <For each={entries()}>
+          {({ store, symbol }) => <td id={symbol}>{latestBid(store)}</td>}
+        </For>
+      </tr>
+    </tbody>
+  </table>
+</div>
 ```
 This creates a single table with a single column for each `fxPair` showing only the most recent bid. The row entries are reactive as they access the contents of the reactive store via the `latestBid()` function under the reactive root of the JSX.
 
 ```TSX
 <For each={entries()}>
   {({ store, symbol, label }) => (
-    <table class="price-table">
-      <caption>{label}</caption>
-      <thead>
-        <tr>
-          <th>Timestamp</th>
-          <th>Bid</th>
-          <th>Ask</th>
-        </tr>
-      </thead>
-      <tbody id={`history--${symbol}`}>
-        <For each={store.prices}>
-          {(price) => (
-            <tr>
-              <th>{formatTimestamp(price.timestamp)}</th>
-              <td>{price.bid}</td>
-              <td>{price.ask}</td>
-            </tr>
-          )}
-        </For>
-      </tbody>
-    </table>
+    <div class="price-table">
+      <table>
+        <caption>{label}</caption>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Bid</th>
+            <th>Ask</th>
+          </tr>
+        </thead>
+        <tbody id={`price-history__${symbol}`}>
+          <For each={store.prices}>
+            {(price) => (
+              <tr>
+                <td>{formatTimestamp(price.timestamp)}</td>
+                <td>{price.bid}</td>
+                <td>{price.ask}</td>
+              </tr>
+            )}
+          </For>
+        </tbody>
+      </table>
+    </div>
   )}
 </For>
 ```
@@ -133,11 +139,11 @@ This creates a single table for each `fxPair` to display a history of the most r
 
 <>
   <Title>FX Client: latest prices</Title>
-  <main>
+  <main class="prices-wrapper">
     { /* latest bid table */ }
     { /* history table per fxPair */ }
-   <footer class="c-info">
-      <p class="c-info__line">
+    <footer class="info">
+      <p>
         Visit{' '}
         <a href="https://start.solidjs.com" target="_blank">
           start.solidjs.com
@@ -145,15 +151,13 @@ This creates a single table for each `fxPair` to display a history of the most r
         to learn how to build SolidStart apps.
       </p>
       <div>
-        <form method="post" action="/logout" class="c-info__logout">
-          <button type="submit" class="c-info__pointer u-flat-button">
-            Logout
-          </button>
+        <form method="post" action="/logout">
+          <button type="submit">Logout</button>
         </form>
       </div>
     </footer>
   </main>
-</>;
+</>
 ```
 
 The footer contains the logout action which redirects to the login page.

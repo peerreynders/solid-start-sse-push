@@ -1,6 +1,6 @@
 import { createCookieSessionStorage } from 'solid-start';
 import { redirect, type FetchEvent } from 'solid-start/server';
-import { safeRedirect, userFromFetchEvent } from './helpers';
+import { safeRedirect, userFromFetchEvent } from './shame';
 import { loginHref } from '~/route-path';
 import { selectUserById } from '~/server/repo';
 
