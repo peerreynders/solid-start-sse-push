@@ -1,4 +1,4 @@
-// file: src/components/event-data-context.tsx
+// file: src/components/pair-data-context.tsx
 import {
 	createContext,
 	createEffect,

@@ -28,6 +28,9 @@ This demonstration application outlines the solution approach envisioned by port
 
 ### Client Page (Component)
 
+Collaborators:
+- [`src/components/pair-data-context.tsx`](#pair-data-context) (via `usePairData()`)
+
 Here the client route (page) isn't even aware that an event source is being used as the page consumes a context provided store, obtained with `usePairData()`, that exposes the data that is aggregated from the realtime events.
 
 ```TypeScript
@@ -76,9 +79,37 @@ export default function Home() {
 
 `fxPairRecord()` is simply a function that returns the appropriate "record" for the passed foreign exchange pair symbol. The record (an ES object) holds the `symbol` for the `fxPair`, its `label` and the reactive [`store`](https://www.solidjs.com/docs/latest/api#createstore) accessor that contains the most recent historical prices for that `fxPair`. 
 
+```TypeScript
+type PriceJson = {
+  timestamp: number;
+  bid: string;
+  ask: string;
+};
+
+type Pair = {
+  symbol: string;
+  prices: Array<{
+    timestamp: Date;
+    bid: string;
+    ask: string;
+  }>;
+};
+
+type FxPairEntry = {
+  fxPair: {
+    symbol: string;
+    label: string;
+    store: Store<Pair>[1];
+  };
+  set: (latest: PriceJson[]) => void;
+};
+
+type FxPairRecordFn = (symbol: string) => fxPairEntry['fxPair'];
+```
+
 So `entries` holds all the `fxPair` records the user has access to.
 
-`disposePairData` is simply used to decrement the reference count on the central event source ([onCleanup](https://www.solidjs.com/docs/latest/api#oncleanup)) so it can disconnect when there are no more "subscribers".
+`disposePairData` is simply used to decrement the reference count on the central event source ([`onCleanup`](https://www.solidjs.com/docs/latest/api#oncleanup)) so it can disconnect when there are no more "subscribers".
 
 ```TSX
 <div class="last-bid-table">
@@ -131,7 +162,7 @@ This creates a single table with a single column for each `fxPair` showing only 
   )}
 </For>
 ```
-This creates a single table for each `fxPair` to display a history of the most recent prices. The store maintains the referential stability of the exisiting `price` records making it possible for SolidJS to reuse the DOM fragments as new price records are added to the store.
+This creates a single table for each `fxPair` to display a history of the most recent prices. The store maintains the referential stability of the existing `prices` records making it possible for SolidJS to reuse the DOM fragments as new price records are added to the store.
 
 ```TSX
 // file: src/routes/index.tsx
@@ -140,7 +171,7 @@ This creates a single table for each `fxPair` to display a history of the most r
 <>
   <Title>FX Client: latest prices</Title>
   <main class="prices-wrapper">
-    { /* latest bid table */ }
+    { /* last bid table */ }
     { /* history table per fxPair */ }
     <footer class="info">
       <p>
@@ -161,6 +192,141 @@ This creates a single table for each `fxPair` to display a history of the most r
 ```
 
 The footer contains the logout action which redirects to the login page.
+
+![Prices Page](./docs/assets/prices-page.jpg)
+
+### Pair Data Context
+
+Collaborators:
+- `src/server/pair-data-source.ts`
+- `usePairData()` [clients](#client-page-component)
+
+The `PairProvider` passes the `fxPairRecord` function via `usePairData()` to context clients which in turn can use `fxPairRecord()` to obtain the `{ symbol, label, store }` record for the specified `symbol`. `store` is the [Store](https://www.solidjs.com/docs/latest/api#stores) accessor to a reactively updating `{ symbol, prices[]}` record.
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+// …
+
+function fxPairRecord(symbol: string) {
+  const entry = getStoreEntry(symbol);
+
+  return entry.fxPair;
+}
+
+const PairDataContext = createContext(fxPairRecord);
+
+// …
+
+// --- Context management ---
+function PairDataProvider(props: ParentProps) {
+  setupEventData();
+
+  return (
+    <PairDataContext.Provider value={fxPairRecord}>
+      {props.children}
+    </PairDataContext.Provider>
+  );
+}
+
+function usePairData() {
+  setRefCount(increment);
+  return useContext(PairDataContext);
+}
+
+export { disposePairData, PairDataProvider, usePairData };
+```
+`usePairData()` also increments a reference count which the context uses to determine whether a connection to the server's event source is currently needed.
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+// --- Context consumer reference count (connect/disconnect) ---
+const [refCount, setRefCount] = createSignal(0);
+const increment = (n: number) => n + 1;
+const decrement = (n: number) => (n > 0 ? n - 1 : 0);
+
+const disposePairData = () => setRefCount(decrement);
+
+// …
+```
+
+The reference count is a signal that keeps track of the currently active `usePairData()` invocations which are expected to be decremented by using `disposePairData()` [`onCleanup`](https://www.solidjs.com/docs/latest/api#oncleanup).
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+let startTimeout: ReturnType<typeof setTimeout> | undefined;
+let start: () => void | undefined;
+
+// …
+
+function setupEventData() {
+  const fxstream = server$(connectServerSource);
+  start = () => {
+    disconnect();
+    startTimeout = undefined;
+    connect(fxstream.url);
+  };
+
+  createEffect(() => {
+    const count = refCount();
+
+    if (count < 1) {
+      if (isActive()) {
+        disconnect();
+
+        lastEventId = undefined;
+
+        if (startTimeout) {
+          clearTimeout(startTimeout);
+          startTimeout = undefined;
+        }
+      }
+
+      return;
+    }
+
+    if (count > 0) {
+      if (isActive()) return;
+
+      start();
+      return;
+    }
+  });
+}
+
+// …
+```
+`setupEventData()` initializes the context behaviour. It creates an RPC handle with [`server$()`](https://start.solidjs.com/api/server) and sets up the module global `start()` function with it. The [`createEffect()`](https://www.solidjs.com/docs/latest/api#createeffect) is triggered whenever the `refCount` signal changes. Based on the most recent count the event source is disconnected or started as needed.
+
+```TypeScript
+const isActive = () =>
+  Boolean(eventSource || startTimeout || abort || sampleTimeout);
+```
+The context is considered active when:
+- an `eventSource` currently exists OR
+- an `eventSource` is scheduled to start OR
+- there is an active `AbortController` OR
+- an eventSample is scheduled to start
+
+```TypeScript
+//  0 - No connection attempted
+//  1 - EventSource created
+//  2 - At least one message received via event source
+//  3 - Use longpoll fallback (event source had error before reaching 2)
+// -1 - Connection failed (fallback also encountered an error; perhaps
+//      identifying the reason for the event source failure)
+//
+const BIND_IDLE = 0;
+const BIND_WAITING = 1;
+const BIND_MESSAGE = 2;
+const BIND_LONG_POLL = 3;
+const BIND_FAILED = -1;
+let sourceBind = BIND_IDLE;
+```
+
+`sourceBind` tracks the connection progress.
 
 ---
 

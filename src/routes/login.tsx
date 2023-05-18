@@ -198,7 +198,7 @@ export default function LoginPage() {
 						aria-invalid={emailInvalid(emailError)}
 						aria-errormessage={emailErrorId(emailError)}
 					/>
-					<div class="login__message-email" id="email-error">
+					<div class="login__message-email" id={emailErrorId(emailError)}>
 						{emailError()}
 					</div>
 				</div>
