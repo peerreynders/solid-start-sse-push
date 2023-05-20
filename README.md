@@ -251,7 +251,7 @@ const disposePairData = () => setRefCount(decrement);
 // …
 ```
 
-The reference count is a signal that keeps track of the currently active `usePairData()` invocations which are expected to be decremented by using `disposePairData()` [`onCleanup`](https://www.solidjs.com/docs/latest/api#oncleanup).
+The reference count is a signal that keeps track of the currently active `usePairData()` invocations which are expected to be decremented by using `disposePairData()` via [`onCleanup`](https://www.solidjs.com/docs/latest/api#oncleanup).
 
 ```TypeScript
 // file: src/components/pair-data-context.tsx
@@ -300,6 +300,9 @@ function setupEventData() {
 ```
 `setupEventData()` initializes the context behaviour. It creates an RPC handle with [`server$()`](https://start.solidjs.com/api/server) and sets up the module global `start()` function with it. The [`createEffect()`](https://www.solidjs.com/docs/latest/api#createeffect) is triggered whenever the `refCount` signal changes. Based on the most recent count the event source is disconnected or started as needed.
 
+Note that RPC handle is only used to obtain the URL of the endpoint and otherwise not as an RPC function.
+
+
 ```TypeScript
 const isActive = () =>
   Boolean(eventSource || startTimeout || abort || sampleTimeout);
@@ -326,7 +329,58 @@ const BIND_FAILED = -1;
 let sourceBind = BIND_IDLE;
 ```
 
-`sourceBind` tracks the connection progress.
+`sourceBind` tracks the connection progress. Based on its value the `connect()` function determines whether to attempt to receive an event stream over [server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events) or to perform event sampling via [long polling](https://javascript.info/long-polling#long-polling).
+
+```TypeScript
+function connect(path: string) {
+  if (sourceBind !== BIND_LONG_POLL) connectEventSource(path);
+  else connectLongPoll(path);
+}
+```
+
+#### Event Streaming with `EventSource`
+
+```TypeScript
+function connectEventSource(path: string) {
+  const href = toHref(path, lastEventId);
+
+  eventSource = new EventSource(href);
+  sourceBind = BIND_WAITING;
+  eventSource.addEventListener('error', onError);
+  eventSource.addEventListener('message', onMessage);
+  setKeepAlive();
+}
+```
+
+`connectEventSource()` simply creates an [`EventSource`](https://developer.mozilla.org/en-US/docs/Web/API/EventSource) for the specified endpoint and attaches [`message`](https://developer.mozilla.org/en-US/docs/Web/API/EventSource/message_event) and [`error`](https://developer.mozilla.org/en-US/docs/Web/API/EventSource/error_event) event handlers. Finally it starts up the keep alive timing.
+
+An `EventSource` will automatically reconnect when it loses the connection with the server but does not deal with unexpected inactivity.
+
+The keep alive timer expires when there has been an extended period without any server-sent events. The connection is then forcefully closed and reconnected.
+
+```TypeScript
+const KEEP_ALIVE_MS = 20000;
+
+// --- Keep alive timer ---
+let keepAliveTimeout: ReturnType<typeof setTimeout> | undefined;
+let start: () => void | undefined;
+
+// …
+
+function clearKeepAlive() {
+  if (!keepAliveTimeout) return;
+
+  clearTimeout(keepAliveTimeout);
+  keepAliveTimeout = undefined;
+}
+
+function setKeepAlive() {
+  clearKeepAlive();
+  keepAliveTimeout = setTimeout(start, KEEP_ALIVE_MS);
+}
+```
+
+The `start` function was set in `setupEventData()`. `start()` runs 20 seconds (`KEEP_ALIVE_MS`) after the last event. Whenever an event is received `setKeepAlive()` is called to cancel the current timer and start a new one.
 
 ---
 
