@@ -1,3 +1,4 @@
+// file: src/lib/foreign-exchange.ts
 import { isTimeValue } from './shame';
 
 export type PriceJson = {

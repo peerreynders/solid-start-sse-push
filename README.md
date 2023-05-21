@@ -341,6 +341,12 @@ function connect(path: string) {
 #### Event Streaming with `EventSource`
 
 ```TypeScript
+// …
+
+let eventSource: EventSource | undefined;
+
+// …
+
 function connectEventSource(path: string) {
   const href = toHref(path, lastEventId);
 
@@ -356,7 +362,7 @@ function connectEventSource(path: string) {
 
 An `EventSource` will automatically reconnect when it loses the connection with the server but does not deal with unexpected inactivity.
 
-The keep alive timer expires when there has been an extended period without any server-sent events. The connection is then forcefully closed and reconnected.
+The keep alive timer expires when there has been an extended period without any server-sent events. The connection is then forcefully closed and reconnected. Note that the `lastEventId` is passed after a forced close.
 
 ```TypeScript
 const KEEP_ALIVE_MS = 20000;
@@ -380,7 +386,95 @@ function setKeepAlive() {
 }
 ```
 
-The `start` function was set in `setupEventData()`. `start()` runs 20 seconds (`KEEP_ALIVE_MS`) after the last event. Whenever an event is received `setKeepAlive()` is called to cancel the current timer and start a new one.
+The `start` function was set in `setupEventData()`. `start()` runs 20 seconds (`KEEP_ALIVE_MS`) after the last event. Whenever an event is received `setKeepAlive()` is called to cancel the current timer and start a new one. At the same time the `lastEventId` is captured so that it is available in case a forced reconnect becomes necessary.
+
+```TypeScript
+// …
+
+let lastEventId: string | undefined;
+
+// …
+
+function onMessage(event: MessageEvent<string>) {
+  if (event.lastEventId) lastEventId = event.lastEventId;
+  setKeepAlive();
+
+  const message = fromJson(event.data);
+  if (!message) return;
+
+  sourceBind = BIND_MESSAGE;
+  update(message);
+}
+```
+
+Note that while *in general* [`message.data`](https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent/data) could be any type, in the context of an `EventSource` it will always be a `string` (e.g. in cases like [`MessagePort`](https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent/data) it could be any [structurally clonable](https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent/data) value).
+
+`fromJson()` returns an `FxMessage` (a [discriminated union](https://www.typescriptlang.org/docs/handbook/2/narrowing.html#discriminated-unions)) which is then processed by `update()`.
+
+```TypeScript
+// file: src/lib/foreign-exchange.ts
+
+// …
+
+export type FxDataMessage = {
+  kind: 'fx-data',
+  symbol: string, // Exchange Pair
+  timestamp: number,
+  prices: PriceJson[],
+};
+
+export type KeepAliveMessage = {
+  kind: 'keep-alive',
+  timestamp: number,
+};
+
+export type ShutdownMessage = {
+  kind: 'shutdown',
+  timestamp: number,
+  until: number,
+};
+
+export type FxMessage = FxDataMessage | KeepAliveMessage | ShutdownMessage;
+```
+
+`update()` delegates the processing of the `FxDataMessage` content to `pushPrices()`. 
+
+The `KeepAliveMessage` serves two puposes; (1) it resets the client's `keepAliveTimeout`; (2) it tries to prevent any intermdiate proxies from closing the connection due to inactivity.
+
+The `ShutdownMessage` advises the client of a data source shutdown and when service will be resumed (`preconnectMs()` is just a random interval to be deducted to connect to the source before the service resumes but while it is already accepting new connections).
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+// …
+
+function update(message: FxMessage) {
+  switch (message.kind) {
+    case 'fx-data': {
+      // De-multiplex messages by pushing
+      // prices onto the matching exchange pair store
+      const { symbol, prices } = message;
+      pushPrices(symbol, prices);
+      return;
+    }
+
+    case 'keep-alive':
+      console.log('keep-alive');
+      return;
+
+    case 'shutdown': {
+      disconnect();
+      const delay = message.until - message.timestamp - preconnectMs();
+      console.log(`shutdown ${message.timestamp} ${message.until} ${delay}`);
+      startTimeout = setTimeout(
+        start,
+        delay > MIN_WAIT_MS ? delay : MIN_WAIT_MS
+      );
+      return;
+    }
+  }
+}
+```
 
 ---
 
