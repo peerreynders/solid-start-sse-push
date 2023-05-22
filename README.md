@@ -475,6 +475,39 @@ function update(message: FxMessage) {
   }
 }
 ```
+The error handler is used to detect if the `EventSource` connection fails. When the connection has failed, it's `readyState` is [closed](https://developer.mozilla.org/en-US/docs/Web/API/EventSource/readyState#value). If at this point no message event has been received over the `EventSource` a long-polling connection is attempted.
+
+```TypeScript
+const READY_STATE_CLOSED = 2;
+
+// …
+
+function onError(_event: Event) {
+  // No way to identify the reason here so try long polling next
+  if (
+    eventSource?.readyState === READY_STATE_CLOSED &&
+    sourceBind !== BIND_MESSAGE
+  ) {
+    sourceBind = BIND_LONG_POLL;
+    disconnectEventSource();
+    setTimeout(start);
+  }
+}
+```
+When an `EventSource` is disconnected the keep aliver timer is stopped, the event handlers removed and the `EventSource` is closed and its reference purged.
+
+```TypeScript
+function disconnectEventSource() {
+  if (!eventSource) return;
+
+  clearKeepAlive();
+  eventSource.removeEventListener('message', onMessage);
+  eventSource.removeEventListener('error', onError);
+  eventSource.close();
+  eventSource = undefined;
+}
+```
+#### Event Sampling with Long Polling
 
 ---
 
