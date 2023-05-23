@@ -99,7 +99,7 @@ type FxPairEntry = {
   fxPair: {
     symbol: string;
     label: string;
-    store: Store<Pair>[1];
+    store: Store<Pair>;
   };
   set: (latest: PriceJson[]) => void;
 };
@@ -509,7 +509,7 @@ function disconnectEventSource() {
 ```
 #### Event Sampling with Long Polling
 
-[Long Polling](https://javascript.info/long-polling) is used as an alternative to event streaming. In this demo the server delays responing to a regular fetch for 5 seconds or until 8 messages have been collected. As a result the client updates aren't as “realtime” as the SSE, event streamed version but can be just as complete.  
+[Long Polling](https://javascript.info/long-polling) is used as an alternative to event streaming. In this demo the server delays responding to a regular fetch for 5 seconds or until 8 messages have been collected. As a result the client updates aren't as “realtime” as the SSE, event streamed version but can be just as complete.  
 
 ```TypeScript
 // file: src/components/pair-data-context.tsx
@@ -592,21 +592,291 @@ If the polling cycle completed successfully another one is scheduled to fetch th
 
 ```Typescript
 function disconnectLongPoll() {
-	clearKeepAlive();
+  clearKeepAlive();
 
-	if (sampleTimeout) {
-		clearTimeout(sampleTimeout);
-		sampleTimeout = undefined;
-	}
+  if (sampleTimeout) {
+    clearTimeout(sampleTimeout);
+    sampleTimeout = undefined;
+  }
 
-	if (abort) {
-		abort.abort();
-		abort = undefined; // i.e. don't repoll
-	}
+  if (abort) {
+    abort.abort();
+    abort = undefined; // i.e. don't repoll
+  }
 }
 ```
 
 `disconnectLongPoll()` stops the polling cycle by cancelling the keep alive and sample timeout. The abort controller is activated if present to terminate the request that is currently polling.
+
+#### Data Demultiplexing
+
+The `update()` function processes the various `FxMessage` types separately. `pushPrices()` stores the `FxDataMessage` payloads according to their price `symbol`.
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+// …
+
+function pushPrices(symbol: string, latest: PriceJson[]) {
+	const entry = getStoreEntry(symbol);
+
+	entry.set(latest);
+}
+```
+
+```TypeScript
+// file: src/lib/foreign-exchange.ts
+
+export type PriceJson = {
+  timestamp: number; // milliseconds since ECMAScript epoch
+  bid: string; // decimal
+  ask: string; // decimal
+};
+
+export type Price = Omit<PriceJson, 'timestamp'> & {
+  timestamp: Date;
+};
+
+// …
+
+export type Pair = {
+  symbol: string;
+  prices: Price[];
+};
+```
+
+``` TypeScript
+// file: src/components/pair-data-context.tsx
+
+// …
+
+// --- Context data store management
+export type PairStore = Store<Pair>;
+```
+
+An `FxMessage` delivers one or more `PriceJson` records that are associated with one specific `symbol`. By converting the `timestamp` from a `number` to a `Date` the `PriceJson` record becomes a `Price` record. The `Pair` type holds the identifying symbol and one or more timestamped `Price`s. 
+
+A `PairStore` is a reactive [store](https://www.solidjs.com/docs/latest/api#using-stores) which holds one or more `Prices` for the identified `symbol`.
+
+
+>Aside: composing a reusable function argument
+>
+>```TypeScript
+>const data = [1, 2, 3, 4];
+>
+>// traditional single use (i.e. GC'ed) function argument
+>const process1 = (addend: number) =>
+>  data.reduce((acc, e) => acc + e + addend, 0);
+>
+>console.log(process1(-1)); // 6
+>
+>// Reusable alternative
+>
+>// Variable/mutable arguments holder
+>const withAddend = {
+>  addend: 0,
+>};
+>
+>// Function portion which uses the arguments holder
+>function reducerForAddend(this: typeof withAddend, acc: number, e: number) {
+>  return acc + e + this.addend;
+>}
+>
+>// Compose both to reusable function which doesn't need to be GC'd
+>const reducer = reducerForAddend.bind(withAddend);
+>
+>const process2 = (addend: number) => (
+>  (withAddend.addend = addend), data.reduce(reducer, 0)
+>);
+>
+>console.log(process2(-1)); // 6
+>```
+
+The `WithLatestArgument` type outlines a mutable argument holder that contains a reference to the `latest` array from a `FxDataMessage` payload and a `maxLength` value specifying the maximum quantity of the most recent `Prices` to collect in the `Pair` managed by the reactive store.
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+type WithLatestArguments = {
+  latest: PriceJson[];
+  maxLength: number;
+};
+```
+The `withLastestPrices` function is composed with a `WithLatestArguments` instance. The `history` array passed to the function holds the most recent `Price` array inside a `Pair`. The function merges `history` and `this.lastest` into a new `Price` array with no more than `this.maxLength` elements.
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+function withLatestPrices(this: WithLatestArguments, history: Price[]) {
+	const { maxLength, latest } = this;
+	const prices = [];
+
+	// Transfer `latest` first to `prices`; most recent price first order.
+	let i = 0;
+	for (let j = 0; i < maxLength && j < latest.length; i += 1, j += 1)
+		prices[i] = fromPriceJson(latest[j]);
+
+	// Fill up `prices` with existing `history` prices up to `maxLength`
+	for (let k = 0; i < maxLength && k < history.length; i += 1, k += 1)
+		prices[i] = history[k];
+
+	return prices;
+}
+```
+- The containing `prices` array **has to change** to signal to the container store that it has been updated.
+- But **retained prices need to be referentially stable**, i.e. existing `Price`s have to be kept, not cloned or recreated. Otherwise the DOM nodes depending on them will be unnecessarily deleted and recreated.
+- `i` tracks the target index for the new `prices` array.
+- `j` tracks the source index from `this.latest`
+- `k` track the source index from `history`
+- All `PriceJson` and `Price` instances are already orded by descending time value (most recent first) in their respective `latest` and `history` collections and the `prices` array is assembled **most recent `Price` first**. 
+
+So `prices` is filled from `this.latest` first and then `history` until it either contains `this.maxLength` entries or the sources have been exhausted. 
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+function makeStoreEntry(symbol: string) {
+  const label = SYMBOLS.get(symbol) ?? '';
+  const [pairPrices, setPairPrices] = createStore<Pair>({
+    symbol,
+    prices: [],
+  });
+
+  const presetArgs: WithLatestArguments = {
+    latest: [],
+    maxLength: 10,
+  };
+  // Prettier will remove the parenthesis resulting in:
+  //   "An instantiation expression cannot be followed by a property access."
+  // prettier-ignore
+  const fn = withLatestPrices.bind(presetArgs);
+  const set = (latest: PriceJson[]) => {
+    presetArgs.latest = latest;
+    setPairPrices('prices', fn);
+  };
+
+  return {
+    fxPair: {
+      symbol,
+      label,
+      store: pairPrices,
+    },
+    set,
+  };
+}
+
+const storeEntries = new Map<string, ReturnType<typeof makeStoreEntry>>();
+```
+`makeStoreEntry` assembles the [`FxPairEntry`](#client-page-component). A store is created around an empty `Pair` instance and a `set` function capable of updating the `Price` array contained in the `Pair` from a `PriceJson` array assembled. The returned `FxPairEntry` holds the read-only `fxPair` and the `set` function to update the `Pair` `prices` ([Read/Write Segregation](https://www.solidjs.com/guides/getting-started#3-readwrite-segregation)).
+
+`fxPair` holds the `symbol`, the display `label` for the `symbol` and the `Store<Pair>` accessor.
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+// …
+
+function getStoreEntry(symbol: string) {
+  let entry = storeEntries.get(symbol);
+  if (entry) return entry;
+
+  entry = makeStoreEntry(symbol);
+  storeEntries.set(entry.fxPair.symbol, entry);
+  return entry;
+}
+
+function fxPairRecord(symbol: string) {
+  const entry = getStoreEntry(symbol);
+
+  return entry.fxPair;
+}
+```
+
+`getStoreEntry` creates `FxPairEntry`s as needed, i.e. they are created whenever `pushPrices()` processes a `symbol` for the first time or when a context client needs access to a `symbol`'s `prices`. Once the entry and the store backing it exist, it is simply accessed as needed. `fxPairRecord` is the function which is shared by the context as the context value, giving any context client access to the read-only `fxPair`. `pushPrices()` on the other hand uses the `set` function of the `FxPairEntry` to update the contents of the `Prices` array.
+
+#### Server (Integration) Endpoint
+
+`connectServerSource` is the server side function that is wrapped in an RPC endpoint by [`server$()`](https://start.solidjs.com/api/server) which then repurposes it to access the request/response capabilities directly via the [`ServerFunctionEvent`](https://github.com/solidjs/solid-start/blob/81fd0204409cf9ea7d3864afe52fad3b4a2a2bdd/packages/start/server/types.tsx#L66-L69). `src/server/pair-data-source.ts` `subscribe()` is used for event streaming while `sample()` is used to gather an event sample. 
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+// …
+
+// --- START server side ---
+
+import {
+  sample as sampleEvents,
+  subscribe as subscribeToSource,
+} from '~/server/pair-data-source';
+
+async function connectServerSource(this: ServerFunctionEvent) {
+  const user = userFromFetchEvent(this);
+  if (!user) throw new ServerError('Unauthorized', { status: 401 });
+
+  const userPairs = await getUserPairs(this.request);
+  if (!userPairs || userPairs.length < 1)
+    throw new ServerError('Forbidden', { status: 403 });
+
+  const info = requestInfo(this.request);
+  const args = {
+    lastEventId: info.lastEventId,
+    pairs: userPairs,
+  };
+
+  // Use `info.streamed === undefined` to force error to switch to fallback
+  if (info.streamed) {
+    let unsubscribe: (() => void) | undefined = undefined;
+
+    const init: InitSource = (controller) => {
+      unsubscribe = subscribeToSource(controller, args);
+
+      return () => {
+        if (unsubscribe) {
+          unsubscribe();
+          unsubscribe = undefined;
+        }
+        console.log('source closed');
+      };
+    };
+
+    return eventStream(this.request, init);
+  }
+
+  if (info.streamed === false) {
+    let close: (() => void) | undefined = undefined;
+
+    const init: InitSample = (controller) => {
+      close = sampleEvents(controller, args);
+
+      return () => {
+        if (close) {
+          close();
+          close = undefined;
+        }
+        console.log('sample closed');
+      };
+    };
+
+    return eventSample(this.request, init);
+  }
+
+  throw new ServerError('Unsupported Media Type', { status: 415 });
+}
+
+// --- END server side ---
+
+```
+
+- Without a user session `401 Unauthorized` is returned.
+- If the user doesn't have any authorized user pairs, `403 Forbidden` is returned.
+- The request is analyzed:
+  - to find whether a `last-event-id` was specified via request header or search parameter.
+  - to determine whether event streaming (`info.streamed === true`) or an event sample (`info.streamed === false` for long polling) was requested. `info.streamed === undefined` results in a `415 Unsupported Media Type` response.
+
+In the streaming case an `init` function is created which is used to create the `eventStream`. The `init` function receives a send/close `controller` (from `eventStream`) which it can pass to `subscribe` to start sending events. `init` in turn returns an `unsubscribe` to `eventStream` which allows it to tear down the entire event subscription.
+
+In the sampling case a send/close `controller` is passed to the `init` function which it passes to `sample()`. `init` returns an `unsubscribe` function to `eventSample` which allows it to tear down the sample task.
 
 ---
 
