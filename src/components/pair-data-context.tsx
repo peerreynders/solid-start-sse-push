@@ -334,7 +334,7 @@ function connectEventSource(path: string) {
 
 // --- Long poll fallback ---
 
-const LONG_POLL_WAIT = 50; // 50 milliseconds
+const LONG_POLL_WAIT_MS = 50; // 50 milliseconds
 let sampleTimeout: ReturnType<typeof setTimeout> | undefined;
 let abort: AbortController | undefined;
 
@@ -357,10 +357,7 @@ function sampleFailed() {
 	disconnectLongPoll();
 }
 
-async function fetchSample(
-	path: string,
-	scheduleNext: (waitMs: number) => void
-) {
+async function fetchSample(path: string) {
 	sampleTimeout = undefined;
 	console.assert(abort === undefined, 'sample abort unexpectedly set');
 
@@ -377,7 +374,7 @@ async function fetchSample(
 			const messages = await response.json();
 
 			if (isFxMessageArray(messages)) multiUpdate(messages);
-			waitMs = LONG_POLL_WAIT;
+			waitMs = LONG_POLL_WAIT_MS;
 		} else {
 			sampleFailed();
 		}
@@ -385,22 +382,20 @@ async function fetchSample(
 		console.error('fetchSample', error);
 		sampleFailed();
 	} finally {
-		if (waitMs >= 0) scheduleNext(waitMs);
+		if (waitMs >= 0) {
+			const current = abort;
+			abort = undefined;
+
+			sampleTimeout =
+				typeof current === 'undefined'
+					? undefined
+					: setTimeout(fetchSample, waitMs, path);
+		}
 	}
 }
 
 function connectLongPoll(path: string) {
-	const repoll = (waitMs: number) => {
-		const lastAbort = abort;
-		abort = undefined;
-
-		sampleTimeout =
-			typeof lastAbort === 'undefined'
-				? undefined
-				: setTimeout(fetchSample, waitMs, path, repoll);
-	};
-
-	setTimeout(fetchSample, LONG_POLL_WAIT, path, repoll);
+	sampleTimeout = setTimeout(fetchSample, LONG_POLL_WAIT_MS, path);
 }
 
 // --- ---

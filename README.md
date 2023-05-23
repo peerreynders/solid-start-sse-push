@@ -509,6 +509,105 @@ function disconnectEventSource() {
 ```
 #### Event Sampling with Long Polling
 
+[Long Polling](https://javascript.info/long-polling) is used as an alternative to event streaming. In this demo the server delays responing to a regular fetch for 5 seconds or until 8 messages have been collected. As a result the client updates aren't as “realtime” as the SSE, event streamed version but can be just as complete.  
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+// …
+
+// --- Long poll fallback ---
+
+const LONG_POLL_WAIT_MS = 50; // 50 milliseconds
+let sampleTimeout: ReturnType<typeof setTimeout> | undefined;
+let abort: AbortController | undefined;
+
+// …
+
+function connectLongPoll(path: string) {
+  sampleTimeout = setTimeout(fetchSample, LONG_POLL_WAIT_MS, path);
+}
+```
+
+The `connectLongPoll()` function initiates the cycle of `fetchSample` tasks. Note how the optional additional parameters on [`setTimeout`](https://developer.mozilla.org/en-US/docs/Web/API/setTimeout#languages-switcher-button) are used to pass the `path` of the endpoint to the scheduled fetch. 
+
+```TypeScript
+// file: src/components/pair-data-context.tsx
+
+function multiUpdate(messages: FxMessage[]) {
+  const lastIndex = messages.length - 1;
+  if (lastIndex < 0) return;
+
+  for (const message of messages) update(message);
+
+  lastEventId = String(messages[lastIndex].timestamp);
+}
+
+function sampleFailed() {
+  sourceBind = BIND_FAILED;
+  disconnectLongPoll();
+}
+
+async function fetchSample(path: string) {
+  sampleTimeout = undefined;
+  console.assert(abort === undefined, 'sample abort unexpectedly set');
+
+  let waitMs = -1;
+  try {
+    const href = toHref(path, lastEventId, false);
+    abort = new AbortController();
+
+    setKeepAlive();
+    const response = await fetch(href, { signal: abort.signal });
+    clearKeepAlive();
+
+    if (response.ok) {
+      const messages = await response.json();
+
+      if (isFxMessageArray(messages)) multiUpdate(messages);
+      waitMs = LONG_POLL_WAIT_MS;
+    } else {
+      sampleFailed();
+    }
+  } catch (error) {
+    console.error('fetchSample', error);
+    sampleFailed();
+  } finally {
+    if (waitMs >= 0) {
+      const current = abort;
+      abort = undefined;
+
+      sampleTimeout =
+        typeof current === 'undefined'
+          ? undefined
+          : setTimeout(fetchSample, waitMs, path);
+    }
+  }
+}
+```
+
+`fetchSample` starts by creating an [`AbortController`](https://developer.mozilla.org/en-US/docs/Web/API/AbortController) and starting the keep alive timer in case the response takes too long. Each message in the `FxMessage[]` response is pushed by `multiUpdate()` through the `update()` function. Note that the URL (`href`) specifies the `lastEventId` received by the client so that the server does send any duplicate messages or miss any messages (as long as they are still cached). 
+
+If the polling cycle completed successfully another one is scheduled to fetch the next collection of messages.
+
+```Typescript
+function disconnectLongPoll() {
+	clearKeepAlive();
+
+	if (sampleTimeout) {
+		clearTimeout(sampleTimeout);
+		sampleTimeout = undefined;
+	}
+
+	if (abort) {
+		abort.abort();
+		abort = undefined; // i.e. don't repoll
+	}
+}
+```
+
+`disconnectLongPoll()` stops the polling cycle by cancelling the keep alive and sample timeout. The abort controller is activated if present to terminate the request that is currently polling.
+
 ---
 
 To be continued…
