@@ -878,6 +878,212 @@ In the streaming case an `init` function is created which is used to create the 
 
 In the sampling case a send/close `controller` is passed to the `init` function which it passes to `sample()`. `init` returns an `unsubscribe` function to `eventSample` which allows it to tear down the sample task.
 
+### Pair Data Source
+
+Collaborators:
+
+- [`src/components/pair-data-context.tsx`](#pair-data-context)
+
+The configuration that governs the source's behaviour: 
+
+```TypeScript
+const PHASE_REST = 0;
+const PHASE_ACCEPT = 1;
+const PHASE_DATA = 2;
+const cycle = [25_000, 5_000, 120_000];
+let sourcePhase = PHASE_REST;
+let restUntil = 0; // TimeValue
+```
+
+- `PHASE_REST` the source isn't accepting any new connections (old connections have been closed) and no events are being emmitted.
+- `PHASE_ACCEPT` the source will accept new connections in preparation for going to `PHASE_DATA` but isn't emitting new events yet.
+- `PHASE_DATA` the source will accept new connections and is emitting new events.
+- `cycle` duration in milliseconds for each phase `[PHASE_REST, PHASE_ACCEPT, PHASE_DATA]`.
+- `sourcePhase` current phase the source is in.
+- `restUntil` time when `PHASE_DATA` will start.
+
+#### Event Streaming for an EventSource 
+
+The [Pair Data Context](#pair-data-context) initiates an event stream by subscribing:
+
+```TypeScript
+// file: src/server/pair-data-source.ts
+
+export type SourceArguments = {
+  lastEventId: string | undefined,
+  pairs: string[],
+};
+
+// …
+
+function bounce(controller: SourceController) {
+  controller.send(
+    JSON.stringify(makeShutdownMessage(epochTimestamp(), restUntil))
+  );
+  return [controller.close, noOp];
+}
+
+function subscribe(controller: SourceController, args: SourceArguments) {
+  const [finalize, unsubscribe] =
+    sourcePhase === PHASE_REST ? bounce(controller) : accept(controller, args);
+
+  queueMicrotask(finalize);
+  return unsubscribe;
+}
+```
+
+The `SourceController` provides the means to send an event (as a JSON string) an to close the response. The `SourceArguments` reveal the most recent event that the client has already received (the “ID” is just a `ms` timestamp) and the Foreign eXchange pairs that the user is authorized to see (assembled [server side](#server-integration-endpoint)).
+
+Depending on the current `sourcePhase` the source either `bounce`s the request, communicating when it will start emitting events again or accepts the connection request.
+
+```TypeScript
+// file: src/server/pair-data-source.ts
+
+type AllowFxPairPredicate = (symbol: string) => boolean;
+
+// --- BEGIN Subscriptions
+type SourceReceiver = {
+  send: SourceController['send'];
+  close: SourceController['close'];
+  allowPair: AllowFxPairPredicate;
+};
+const subscribers = new Set<SourceReceiver>();
+
+// …
+
+// --- Event subscriptions
+
+function accept(controller: SourceController, args: SourceArguments) {
+  const id = Number(args.lastEventId);
+  const lastTime = Number.isNaN(id) || !isTimeValue(id) ? 0 : id;
+
+  // 0. waiting -> 1. subscribed -> 2. unsubscribed
+  let status = 0;
+  let receiver: SourceReceiver | undefined;
+  const finalize = () => {
+    if (status > 0) return;
+
+    receiver = {
+      send: controller.send,
+      close: controller.close,
+      allowPair: (symbol: string) => -1 < args.pairs.indexOf(symbol),
+    };
+
+    const timestamp = epochTimestamp();
+    const burst = makePriceBurst(receiver.allowPair, lastTime);
+    const id = timestamp.toString();
+    for (const info of burst) {
+      controller.send(JSON.stringify(info), id);
+    }
+
+    subscribers.add(receiver);
+    status = 1;
+  };
+
+  const unsubscribe = () => {
+    const previous = status;
+    status = 2;
+    // subscription didn't finish, but will not subscribe
+    if (previous < 1) return true;
+
+    // already unsubscribed
+    if (!receiver) return false;
+
+    // actually unsubscribe
+    subscribers.delete(receiver);
+    receiver = undefined;
+    return true;
+  };
+
+  return [finalize, unsubscribe];
+}
+```
+
+The `accept` function constructs two functions `finalize` and `unsubscribe`. `finalize` sets up the connection for event streaming, provided that `unsubscribe` hasn't been executed already. `finalize` puts together a "burst" of cached events that have occured since `lastTime` and then adds the `receiver` to the `subscribers`.
+
+`unsubscribe` removes the `receiver` from `subscribers` if necessary.
+
+#### Price Cache
+
+```TypeScript
+// file: src/server/pair-data-source.ts
+
+// --- BEGIN Price Cache History
+
+function makeCache(symbol: string) {
+  return {
+    symbol,
+    prices: [] as PriceJson[],
+    next: 0,
+  };
+}
+
+type PriceCache = ReturnType<typeof makeCache>;
+
+const CACHE_SIZE = 10;
+const priceCache = (() => {
+  const cache = new Map<string, PriceCache>();
+  for (const symbol of SYMBOLS.keys()) cache.set(symbol, makeCache(symbol));
+  return cache;
+})();
+
+function cachePrice({ symbol, prices: [price] }: FxDataMessage) {
+	const cache = priceCache.get(symbol);
+	if (!cache) return;
+
+	// Replace least recent price
+	const next = cache.next;
+	cache.next = (next + 1) % CACHE_SIZE;
+
+	if (cache.prices.length >= CACHE_SIZE) {
+		cache.prices[next] = price;
+		return;
+	}
+
+	cache.prices.push(price);
+}
+
+function copyHistory({ next, prices }: PriceCache, after: number) {
+  const history = [];
+  const length = prices.length;
+  // accumulate history most recent first
+  // only with timestamps more recent than `after`
+  for (
+    let i = next > 0 ? next - 1 : length - 1, k = 0;
+    k < length;
+    i = i > 0 ? i - 1 : length - 1, k += 1
+  ) {
+    if (prices[i].timestamp <= after) break;
+
+    history[k] = prices[i];
+  }
+
+  return history;
+}
+
+function makePriceBurst(allowPair: AllowFxPairPredicate, after: number) {
+  const result: FxDataMessage[] = [];
+
+  for (const cache of priceCache.values()) {
+    if (cache.prices.length < 1 || !allowPair(cache.symbol)) continue;
+
+    const history = copyHistory(cache, after);
+    if (history.length < 1) continue;
+
+    const mostRecent = history[0].timestamp;
+    result.push(makeFxDataMessage(cache.symbol, mostRecent, history));
+  }
+
+  return result;
+}
+
+// --- END Price Cache History
+```
+
+`makePriceBurst` goes through `priceCache` and adds all of the prices for authorized pairs later than `after` to `result`. The prices are copied in a "most recent first" order. 
+
+`cachePrice` is called whenever a new `FxDataMessage` is generated to extract and cache the most recent price information. The `PriceCache` `prices` array is managed as a circular buffer; `next` is the index to the most recent price while `(next + 1) % CACHE_SIZE` holds the least recent price.
+
 ---
 
 To be continued…
